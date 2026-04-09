@@ -10,10 +10,11 @@ dist/
 build/
 coverage/
 htmlcov/
+*.egg-info/
+*.tsbuildinfo
 .env
 .env.local
 *.pyc
 *.pyo
 *.pyd
 alembic/versions/__pycache__/
-
