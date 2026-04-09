@@ -12,3 +12,9 @@ Governance and traceability:
 - [Implementation memories](docs/memories/repo-bootstrap/2026-04-09-implementation-note.md)
 
 Application code is intentionally not described here. Use the spec and the docs under `docs/` as the contract.
+
+Local run:
+
+- `./run.sh` starts the full Docker Compose stack and prints the local URLs.
+- `./run.sh logs api` tails one service.
+- `./run.sh down` stops the stack.
