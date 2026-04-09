@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #09111f;
+  --color-ink-soft: #0f1b31;
+  --color-panel: #111a2f;
+  --color-panel-strong: #18233d;
+  --color-line: rgba(148, 163, 184, 0.18);
+  --color-text: #e5eefc;
+  --color-muted: #93a4c3;
+  --color-accent: #7dd3fc;
+  --color-accent-strong: #38bdf8;
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-danger: #fb7185;
+  --color-surface: rgba(15, 23, 42, 0.72);
+  --shadow-panel: 0 20px 80px rgba(6, 11, 21, 0.45);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 28%),
+      radial-gradient(circle at top right, rgba(125, 211, 252, 0.12), transparent 24%),
+      linear-gradient(180deg, #020617 0%, #09111f 45%, #030712 100%);
+    color: var(--color-text);
+  }
+
+  * {
+    border-color: var(--color-line);
+  }
+
+  ::selection {
+    background: rgba(56, 189, 248, 0.32);
+    color: white;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-white/10 bg-white/5 shadow-2xl backdrop-blur-xl;
+    box-shadow: var(--shadow-panel);
+  }
+
+  .panel-strong {
+    @apply rounded-2xl border border-cyan-300/20 bg-[color:var(--color-panel)] shadow-2xl;
+  }
+
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400;
+  }
+}

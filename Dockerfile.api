@@ -1,0 +1,20 @@
+FROM python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock README.md alembic.ini /app/
+COPY alembic /app/alembic
+COPY apps /app/apps
+COPY src /app/src
+COPY scripts /app/scripts
+
+RUN uv sync --frozen --no-dev
+
+EXPOSE 8000
+
+CMD ["sh", "-c", "uv run python scripts/bootstrap_db.py && uv run alembic upgrade head && uv run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000"]

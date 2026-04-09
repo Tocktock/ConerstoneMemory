@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_DB: memoryengine
+      POSTGRES_USER: memoryengine
+      POSTGRES_PASSWORD: memoryengine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memoryengine -d memoryengine"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      MEMORYENGINE_DATABASE_URL: postgresql+psycopg://memoryengine:memoryengine@postgres:5432/memoryengine
+      MEMORYENGINE_AUTH_SECRET: dev-secret-change-me
+      MEMORYENGINE_ENVIRONMENT: dev
+      MEMORYENGINE_CORS_ORIGINS: '["http://localhost:3000"]'
+      MEMORYENGINE_EMBEDDING_PROVIDER: hash
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      MEMORYENGINE_DATABASE_URL: postgresql+psycopg://memoryengine:memoryengine@postgres:5432/memoryengine
+      MEMORYENGINE_AUTH_SECRET: dev-secret-change-me
+      MEMORYENGINE_ENVIRONMENT: dev
+      MEMORYENGINE_EMBEDDING_PROVIDER: hash
+    command: ["sh", "-c", "uv run python scripts/bootstrap_db.py && uv run alembic upgrade head && uv run python -m apps.worker.main"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_MEMORYENGINE_API_BASE_URL: http://localhost:8001
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:

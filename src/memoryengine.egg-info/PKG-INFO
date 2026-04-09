@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: memoryengine
+Version: 0.1.0
+Summary: Human-configurable API-driven memory platform v1
+Requires-Python: >=3.14
+Description-Content-Type: text/markdown
+Requires-Dist: alembic<2.0.0,>=1.16.5
+Requires-Dist: email-validator<3.0.0,>=2.3.0
+Requires-Dist: fastapi<0.136.0,>=0.135.3
+Requires-Dist: httpx<0.29.0,>=0.28.1
+Requires-Dist: pgvector<0.5.0,>=0.4.1
+Requires-Dist: psycopg[binary]<4.0.0,>=3.2.12
+Requires-Dist: pydantic<3.0.0,>=2.11.0
+Requires-Dist: pydantic-settings<3.0.0,>=2.11.0
+Requires-Dist: python-multipart<0.0.21,>=0.0.20
+Requires-Dist: pyyaml<7.0.0,>=6.0.3
+Requires-Dist: sqlalchemy<3.0.0,>=2.0.43
+Requires-Dist: uvicorn[standard]<0.36.0,>=0.35.0
+Provides-Extra: dev
+Requires-Dist: pytest<9.0.0,>=8.4.2; extra == "dev"
+Requires-Dist: pytest-cov<8.0.0,>=7.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio<2.0.0,>=1.2.0; extra == "dev"
+
+# MemoryEngine
+
+Docs-first repository for the Human-Configurable API-Driven Memory Platform v1.
+
+Primary source of truth:
+
+- [Umbrella spec](docs/specs/spec_1.0.md)
+
+Governance and traceability:
+
+- [Architecture decisions](docs/decisions/0001-repo-shape-and-postgres-job-ledger.md)
+- [Implementation memories](docs/memories/repo-bootstrap/2026-04-09-implementation-note.md)
+
+Application code is intentionally not described here. Use the spec and the docs under `docs/` as the contract.
