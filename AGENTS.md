@@ -42,6 +42,8 @@ Until the spec is split into smaller feature-first documents, treat `/docs/specs
 3. When a conversation or decision has likely future value, record it under `/docs/memories/` during the same workstream.
 4. After implementation, update the touched spec and memory artifacts in the same change whenever behavior, intent, or rationale changed.
 5. If a request is underspecified, clarify the spec instead of filling gaps with undocumented assumptions.
+6. Every feature must have a synthetic test that exercises the feature through externally observable behavior instead of relying only on unit-level assertions or ad hoc manual checks.
+7. Add or update the relevant synthetic test in the same change as the feature, and do not treat the feature as complete until that synthetic test passes or the missing harness is explicitly documented as a blocker.
 
 ## What must be memorized
 
@@ -112,7 +114,9 @@ This repository is currently docs-first. Start with high-signal checks against t
 - `rg -n "^## " docs/specs/spec_1.0.md`
 - `rg -n "Acceptance Criteria|Observability and Audit|Security Rules" docs/specs/spec_1.0.md`
 
-When runnable backend, frontend, or infra code lands, extend this section with concrete repo-local lint, test, typecheck, and build commands instead of generic placeholders.
+When runnable backend, frontend, or infra code lands, extend this section with concrete repo-local lint, test, typecheck, build, and synthetic test commands instead of generic placeholders.
+
+Synthetic test commands should map back to documented feature acceptance criteria and cover the API, worker, and control-plane surfaces that the change affects.
 
 ## Verification expectations
 
@@ -120,6 +124,9 @@ When runnable backend, frontend, or infra code lands, extend this section with c
 - For memory engine changes, verify deduplication, conflict resolution, supersession, sensitivity blocking, retrieval visibility, and delete/forget behavior.
 - For API or schema changes, verify traceability fields, especially evidence linkage and `config_snapshot_id`.
 - Prefer regression tests and checks that map directly to documented acceptance criteria.
+- Every shipped feature must be covered by a synthetic test that verifies the feature end-to-end at the behavior level, not only through isolated implementation details.
+- If a feature changes existing behavior, update the affected synthetic test as part of the same change and use that test as the primary verification evidence.
+- If synthetic coverage is temporarily impossible, document the blocker, missing harness, and follow-up in the same workstream; the feature is not considered fully complete until synthetic coverage exists.
 
 ## Language and terminology
 
