@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 import math
 from typing import Any
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from memory_engine.control.schemas import MemoryOntologyDefinition, PolicyProfileDefinition
+from memory_engine.config.settings import get_settings
+from memory_engine.control.schemas import MemoryOntologyDefinition, PolicyProfileDefinition, SENSITIVITY_RANK
 from memory_engine.db.models import (
     ConfigDocument,
     ConfigPublication,
@@ -20,9 +22,12 @@ from memory_engine.db.models import (
     Relation,
     RuntimeApiEvent,
     SignalCounter,
+    SignalObservation,
 )
 from memory_engine.id_utils import new_id, utcnow
+from memory_engine.ops.metrics import increment_metric
 from memory_engine.runtime.policy import evaluate_event
+from memory_engine.runtime.protection import protect_payload, restore_payload
 from memory_engine.runtime.schemas import DecisionEnvelope, EventIngestRequest, ForgetRequest, MemoryQueryRequest, QueryResult
 from memory_engine.worker.embeddings import get_embedding_provider
 
@@ -72,30 +77,120 @@ def _create_alias(session: Session, entity: Entity, alias: str | None, alias_typ
     )
 
 
-def _update_signal_counter(session: Session, event: RuntimeApiEvent, envelope: DecisionEnvelope) -> None:
-    for candidate in envelope.candidates:
-        signal_key = f"{event.user_id}:{candidate.memory_type}:{candidate.canonical_key}"
-        counter = session.get(SignalCounter, signal_key)
-        if counter is None:
-            counter = SignalCounter(
-                signal_key=signal_key,
-                tenant_id=event.tenant_id,
-                user_id=event.user_id,
-                memory_type=candidate.memory_type,
-                canonical_object_key=candidate.canonical_key,
-                decayed_weight=0.0,
-                unique_sessions_30d=0,
-                unique_days_30d=0,
-                source_diversity_30d=0,
-                same_session_burst_ratio=0.0,
+def _signal_key(event: RuntimeApiEvent, candidate) -> str:
+    return f"{event.user_id}:{candidate.memory_type}:{candidate.canonical_key}"
+
+
+def _merge_payload(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _restored_memory_payload(memory: Memory) -> dict[str, Any]:
+    return restore_payload(memory.value_jsonb, memory.protected_value_encrypted)
+
+
+def _embedding_text(
+    clear_payload: dict[str, Any],
+    *,
+    sensitivity: str,
+    memory_definition,
+    policy: PolicyProfileDefinition,
+) -> str | None:
+    if memory_definition.embed_mode == "DISABLED":
+        return None
+    candidates = [
+        clear_payload.get("summary"),
+        clear_payload.get("topic"),
+        clear_payload.get("canonical_customer_id"),
+        clear_payload.get("domain"),
+        clear_payload.get("city"),
+        clear_payload.get("country"),
+    ]
+    text = next((str(item) for item in candidates if item), None)
+    if text is None:
+        return None
+    if sensitivity in {"S2_PERSONAL", "S3_CONFIDENTIAL", "S4_RESTRICTED"} and policy.embedding_rules.raw_sensitive_embedding_allowed:
+        return None
+    return text
+
+
+def _is_typo_correction(existing_memory: Memory, candidate, policy: PolicyProfileDefinition) -> bool:
+    if existing_memory.updated_at < utcnow() - timedelta(minutes=policy.conflict_windows.typo_correction_minutes):
+        return False
+    similarity = SequenceMatcher(None, existing_memory.canonical_key, candidate.canonical_key).ratio()
+    return similarity >= 0.85
+
+
+def _record_signal_observation(
+    session: Session,
+    *,
+    event: RuntimeApiEvent,
+    candidate,
+    policy: PolicyProfileDefinition,
+) -> None:
+    signal_key = _signal_key(event, candidate)
+    session.add(
+        SignalObservation(
+            observation_id=new_id("observation"),
+            signal_key=signal_key,
+            tenant_id=event.tenant_id,
+            user_id=event.user_id,
+            memory_type=candidate.memory_type,
+            canonical_object_key=candidate.canonical_key,
+            session_id=event.session_id,
+            source_key=candidate.source_precedence_key,
+            observed_at=event.occurred_at,
+        )
+    )
+    session.flush()
+    cutoff = event.occurred_at - timedelta(days=30)
+    observations = list(
+        session.scalars(
+            select(SignalObservation)
+            .where(
+                SignalObservation.signal_key == signal_key,
+                SignalObservation.observed_at >= cutoff,
             )
-            session.add(counter)
-        counter.decayed_weight = min(counter.decayed_weight + 0.35, 1.0)
-        counter.unique_sessions_30d += 1 if event.session_id else 0
-        counter.unique_days_30d += 1
-        counter.source_diversity_30d = min(counter.source_diversity_30d + 1, 10)
-        counter.same_session_burst_ratio = 0.0
-        counter.last_seen_at = utcnow()
+            .order_by(SignalObservation.observed_at.desc())
+        )
+    )
+    counter = session.get(SignalCounter, signal_key)
+    if counter is None:
+        counter = SignalCounter(
+            signal_key=signal_key,
+            tenant_id=event.tenant_id,
+            user_id=event.user_id,
+            memory_type=candidate.memory_type,
+            canonical_object_key=candidate.canonical_key,
+        )
+        session.add(counter)
+    half_life = max(policy.frequency.half_life_days, 1)
+    total = len(observations) or 1
+    session_counts: dict[str, int] = {}
+    for observation in observations:
+        if observation.session_id:
+            session_counts[observation.session_id] = session_counts.get(observation.session_id, 0) + 1
+    counter.decayed_weight = sum(
+        math.pow(0.5, max((event.occurred_at - observation.observed_at).total_seconds(), 0) / (half_life * 86400))
+        for observation in observations
+    )
+    counter.unique_sessions_30d = len({item.session_id for item in observations if item.session_id})
+    counter.unique_days_30d = len({item.observed_at.date() for item in observations})
+    counter.source_diversity_30d = len({item.source_key for item in observations})
+    counter.same_session_burst_ratio = (max(session_counts.values()) / total) if session_counts else 0.0
+    counter.last_seen_at = event.occurred_at
+
+
+def _record_resolution_metric(session: Session, resolution: str, memory_type: str) -> None:
+    increment_metric(
+        session,
+        "memory_resolution_events",
+        labels={"resolution": resolution, "memory_type": memory_type},
+    )
 
 
 def _memory_ontology(bundle: Mapping[str, ConfigDocument]) -> dict[str, Any]:
@@ -142,7 +237,8 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
         attributes={"user_id": event.user_id},
     )
 
-    _update_signal_counter(session, event, envelope)
+    for candidate in envelope.candidates:
+        _record_signal_observation(session, event=event, candidate=candidate, policy=policy)
 
     if envelope.action == "FORGET":
         forget_memories(
@@ -155,9 +251,12 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
     if envelope.action != "UPSERT":
         return {"action": envelope.action, "candidates": len(envelope.candidates)}
 
-    persisted = []
+    persisted: list[str] = []
+    resolutions: list[dict[str, str]] = []
     for candidate in envelope.candidates:
         memory_definition = ontology[candidate.memory_type]
+        supersedes_id = None
+        clear_payload, encrypted_payload = protect_payload(candidate.value, candidate.sensitivity)
         object_entity = None
         if candidate.relation_type or memory_definition.object_type:
             object_entity = _get_or_create_entity(
@@ -165,12 +264,24 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                 tenant_id=event.tenant_id,
                 entity_type=memory_definition.object_type or memory_definition.value_type or "Value",
                 canonical_key=candidate.canonical_key,
-                attributes=candidate.value,
+                attributes=clear_payload,
             )
-            _create_alias(session, object_entity, candidate.value.get("customer"), "customer_name")
-            _create_alias(session, object_entity, candidate.value.get("domain"), "domain")
+            _create_alias(session, object_entity, clear_payload.get("customer"), "customer_name")
+            _create_alias(session, object_entity, clear_payload.get("domain"), "domain")
 
-        existing_memory = session.scalar(
+        same_memory = session.scalar(
+            select(Memory)
+            .where(
+                Memory.tenant_id == event.tenant_id,
+                Memory.user_id == event.user_id,
+                Memory.memory_type == candidate.memory_type,
+                Memory.state == "active",
+                Memory.canonical_key == candidate.canonical_key,
+            )
+            .order_by(desc(Memory.updated_at))
+            .limit(1)
+        )
+        active_memory = session.scalar(
             select(Memory)
             .where(
                 Memory.tenant_id == event.tenant_id,
@@ -178,45 +289,83 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                 Memory.memory_type == candidate.memory_type,
                 Memory.state == "active",
             )
-            .order_by(desc(Memory.created_at))
+            .order_by(desc(Memory.updated_at))
             .limit(1)
         )
 
         if memory_definition.cardinality == "ONE_ACTIVE":
-            if existing_memory and existing_memory.canonical_key == candidate.canonical_key:
+            if same_memory is not None:
+                prior_payload = _restored_memory_payload(same_memory)
+                merged_payload = _merge_payload(prior_payload, candidate.value)
+                resolution = "merge" if merged_payload != prior_payload else "duplicate"
+                same_memory.value_jsonb, same_memory.protected_value_encrypted = protect_payload(
+                    merged_payload,
+                    candidate.sensitivity,
+                )
+                same_memory.confidence = max(same_memory.confidence, candidate.confidence)
+                same_memory.importance = max(same_memory.importance, memory_definition.importance_default)
+                same_memory.source_precedence_key = candidate.source_precedence_key
+                same_memory.source_precedence_score = max(
+                    same_memory.source_precedence_score,
+                    candidate.source_precedence_score,
+                )
                 _attach_evidence(
                     session,
                     linked_record_type="memory",
-                    linked_record_id=existing_memory.memory_id,
+                    linked_record_id=same_memory.memory_id,
                     event=event,
                     candidate=candidate,
                     config_snapshot_id=envelope.config_snapshot_id or "",
                 )
-                persisted.append(existing_memory.memory_id)
+                _record_resolution_metric(session, resolution, candidate.memory_type)
+                resolutions.append({"memory_type": candidate.memory_type, "resolution": resolution})
+                persisted.append(same_memory.memory_id)
                 continue
-            if existing_memory:
-                if candidate.confidence >= existing_memory.confidence:
-                    existing_memory.state = "superseded"
-                    existing_memory.valid_to = utcnow()
-                else:
-                    existing_memory.state = "conflicted"
-                    continue
 
-        if memory_definition.cardinality == "MANY_SCORED" and existing_memory and existing_memory.canonical_key == candidate.canonical_key:
-            existing_memory.confidence = min(1.0, existing_memory.confidence + 0.1)
-            existing_memory.importance = min(1.0, existing_memory.importance + 0.05)
+            supersedes_id = None
+            if active_memory is not None:
+                if (
+                    candidate.source_precedence_score > active_memory.source_precedence_score
+                    or candidate.source_precedence_key == active_memory.source_precedence_key
+                    or _is_typo_correction(active_memory, candidate, policy)
+                ):
+                    active_memory.state = "superseded"
+                    active_memory.valid_to = utcnow()
+                    supersedes_id = active_memory.memory_id
+                    _record_resolution_metric(session, "supersede", candidate.memory_type)
+                    resolutions.append({"memory_type": candidate.memory_type, "resolution": "supersede"})
+                elif candidate.source_precedence_score == active_memory.source_precedence_score:
+                    active_memory.state = "conflicted"
+                    active_memory.valid_to = utcnow()
+                    _record_resolution_metric(session, "conflict", candidate.memory_type)
+                    resolutions.append({"memory_type": candidate.memory_type, "resolution": "conflict"})
+                    continue
+                else:
+                    _record_resolution_metric(session, "reject", candidate.memory_type)
+                    resolutions.append({"memory_type": candidate.memory_type, "resolution": "reject"})
+                    continue
+        elif memory_definition.cardinality == "MANY_SCORED" and same_memory is not None:
+            same_memory.confidence = min(1.0, same_memory.confidence + 0.1)
+            same_memory.importance = min(1.0, same_memory.importance + 0.05)
+            same_memory.source_precedence_key = candidate.source_precedence_key
+            same_memory.source_precedence_score = max(
+                same_memory.source_precedence_score,
+                candidate.source_precedence_score,
+            )
             _attach_evidence(
                 session,
                 linked_record_type="memory",
-                linked_record_id=existing_memory.memory_id,
+                linked_record_id=same_memory.memory_id,
                 event=event,
                 candidate=candidate,
                 config_snapshot_id=envelope.config_snapshot_id or "",
             )
-            persisted.append(existing_memory.memory_id)
+            _record_resolution_metric(session, "reinforce", candidate.memory_type)
+            resolutions.append({"memory_type": candidate.memory_type, "resolution": "reinforce"})
+            persisted.append(same_memory.memory_id)
             continue
 
-        if memory_definition.memory_class == "relation" and object_entity:
+        if memory_definition.memory_class == "relation" and object_entity is not None:
             relation = session.scalar(
                 select(Relation).where(
                     Relation.tenant_id == event.tenant_id,
@@ -229,6 +378,8 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
             if relation:
                 relation.evidence_count += 1
                 relation.strength = min(1.0, relation.strength + 0.1)
+                relation.source_precedence_key = candidate.source_precedence_key
+                relation.source_precedence_score = max(relation.source_precedence_score, candidate.source_precedence_score)
                 _attach_evidence(
                     session,
                     linked_record_type="relation",
@@ -237,6 +388,8 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                     candidate=candidate,
                     config_snapshot_id=envelope.config_snapshot_id or "",
                 )
+                _record_resolution_metric(session, "duplicate", candidate.memory_type)
+                resolutions.append({"memory_type": candidate.memory_type, "resolution": "duplicate"})
                 persisted.append(relation.relation_id)
                 continue
             relation = Relation(
@@ -248,6 +401,8 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                 state="active",
                 strength=candidate.confidence,
                 evidence_count=1,
+                source_precedence_key=candidate.source_precedence_key,
+                source_precedence_score=candidate.source_precedence_score,
                 config_snapshot_id=envelope.config_snapshot_id or "",
             )
             session.add(relation)
@@ -260,20 +415,19 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                 candidate=candidate,
                 config_snapshot_id=envelope.config_snapshot_id or "",
             )
+            increment_metric(session, "memory_creation_counts", labels={"memory_type": candidate.memory_type, "record_type": "relation"})
             persisted.append(relation.relation_id)
             continue
 
         embedding = None
-        if (
-            candidate.sensitivity in {"S0_PUBLIC", "S1_INTERNAL"}
-            or (
-                candidate.memory_type in policy.sensitivity.memory_type_allow_ceiling
-                and not policy.embedding_rules.raw_sensitive_embedding_allowed
-            )
-        ):
-            summary = candidate.value.get("summary") or candidate.value.get("topic") or candidate.value.get("address")
-            if summary:
-                embedding = provider.embed(str(summary))
+        embedding_text = _embedding_text(
+            clear_payload,
+            sensitivity=candidate.sensitivity,
+            memory_definition=memory_definition,
+            policy=policy,
+        )
+        if embedding_text:
+            embedding = provider.embed(embedding_text)
 
         memory = Memory(
             memory_id=new_id("memory"),
@@ -282,13 +436,18 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
             memory_type=candidate.memory_type,
             subject_entity_id=subject.entity_id,
             object_entity_id=object_entity.entity_id if object_entity else None,
-            value_jsonb=candidate.value,
+            value_jsonb=clear_payload,
+            protected_value_encrypted=encrypted_payload,
             canonical_key=candidate.canonical_key,
             state="active",
             confidence=candidate.confidence,
             importance=memory_definition.importance_default,
             sensitivity=candidate.sensitivity,
+            ttl_days=memory_definition.default_ttl_days,
+            source_precedence_key=candidate.source_precedence_key,
+            source_precedence_score=candidate.source_precedence_score,
             embedding=embedding,
+            supersedes=supersedes_id if memory_definition.cardinality == "ONE_ACTIVE" else None,
             config_snapshot_id=envelope.config_snapshot_id or "",
         )
         session.add(memory)
@@ -301,8 +460,9 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
             candidate=candidate,
             config_snapshot_id=envelope.config_snapshot_id or "",
         )
+        increment_metric(session, "memory_creation_counts", labels={"memory_type": candidate.memory_type, "record_type": "memory"})
         persisted.append(memory.memory_id)
-    return {"action": envelope.action, "persisted": persisted}
+    return {"action": envelope.action, "persisted": persisted, "resolutions": resolutions}
 
 
 def ingest_event(
@@ -315,6 +475,7 @@ def ingest_event(
     envelope = evaluate_event(session, event_request, bundle, snapshot)
     api_definition = bundle["api_ontology"].definition_jsonb
     capability_family = "UNKNOWN"
+    occurred_at = event_request.occurred_at or utcnow()
     for entry in api_definition.get("entries", []):
         if entry.get("api_name") == event_request.api_name:
             capability_family = entry.get("capability_family", "UNKNOWN")
@@ -332,7 +493,7 @@ def ingest_event(
         decision_jsonb=envelope.model_dump(mode="json"),
         config_snapshot_id=snapshot.id,
         status="decided",
-        occurred_at=event_request.occurred_at or utcnow(),
+        occurred_at=occurred_at,
     )
     job = Job(
         job_id=new_id("job"),
@@ -342,6 +503,14 @@ def ingest_event(
     )
     session.add(event)
     session.add(job)
+    increment_metric(session, "decision_counts", labels={"action": envelope.action})
+    if envelope.action == "BLOCK" and envelope.candidates:
+        max_sensitivity = max(envelope.candidates, key=lambda item: SENSITIVITY_RANK[item.sensitivity]).sensitivity
+        increment_metric(session, "blocked_counts_by_sensitivity", labels={"sensitivity": max_sensitivity})
+    repeat_bucket = f"{int(envelope.repeat_score * 4)}/4"
+    increment_metric(session, "repeat_score_distributions", labels={"bucket": repeat_bucket})
+    if snapshot.scope in {"tenant", "emergency_override"} or event_request.structured_fields.get("tenant_override_sensitivity"):
+        increment_metric(session, "tenant_override_usage", labels={"scope": snapshot.scope})
     session.commit()
     session.refresh(event)
     session.refresh(job)
@@ -353,10 +522,6 @@ def process_job(session: Session, job: Job, bundle: Mapping[str, ConfigDocument]
     if event is None:
         raise ValueError(f"Event not found for job {job.job_id}")
     envelope = DecisionEnvelope.model_validate(job.payload_jsonb["decision"])
-    job.status = "running"
-    job.attempts += 1
-    job.locked_at = utcnow()
-    session.commit()
     result = persist_event_job(session, event, envelope, bundle)
     event.status = "processed"
     event.processed_at = utcnow()
@@ -368,20 +533,138 @@ def process_job(session: Session, job: Job, bundle: Mapping[str, ConfigDocument]
     return job
 
 
+def _process_ttl_cleanup_job(session: Session, job: Job) -> dict[str, Any]:
+    expired = 0
+    memories = list(
+        session.scalars(
+            select(Memory).where(
+                Memory.state == "active",
+                Memory.ttl_days.is_not(None),
+            )
+        )
+    )
+    now = utcnow()
+    for memory in memories:
+        if memory.ttl_days is None:
+            continue
+        if memory.created_at <= now - timedelta(days=memory.ttl_days):
+            memory.state = "deleted"
+            memory.valid_to = now
+            expired += 1
+    if expired:
+        increment_metric(session, "ttl_cleanup_events", labels={"expired": str(expired)})
+    return {"expired": expired}
+
+
+def _process_embedding_backfill_job(session: Session, job: Job) -> dict[str, Any]:
+    provider = get_embedding_provider()
+    updated = 0
+    memories = list(
+        session.scalars(
+            select(Memory).where(
+                Memory.state == "active",
+                Memory.embedding.is_(None),
+            )
+        )
+    )
+    for memory in memories:
+        clear_payload = _restored_memory_payload(memory)
+        text = next(
+            (
+                str(item)
+                for item in [
+                    clear_payload.get("summary"),
+                    clear_payload.get("topic"),
+                    clear_payload.get("canonical_customer_id"),
+                    clear_payload.get("domain"),
+                ]
+                if item
+            ),
+            None,
+        )
+        if text:
+            memory.embedding = provider.embed(text)
+            updated += 1
+    return {"embedded": updated}
+
+
+def _process_recompute_conflicts_job(session: Session, job: Job) -> dict[str, Any]:
+    reconciled = 0
+    active_memories = list(session.scalars(select(Memory).where(Memory.state == "active").order_by(Memory.updated_at.desc())))
+    groups: dict[tuple[str, str, str], list[Memory]] = {}
+    for memory in active_memories:
+        groups.setdefault((memory.tenant_id, memory.user_id, memory.memory_type), []).append(memory)
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+        ordered = sorted(
+            group,
+            key=lambda item: (item.source_precedence_score, item.confidence, item.updated_at.timestamp()),
+            reverse=True,
+        )
+        winner = ordered[0]
+        for memory in ordered[1:]:
+            if memory.state == "active":
+                memory.state = "conflicted"
+                memory.valid_to = utcnow()
+                reconciled += 1
+        winner.state = "active"
+    if reconciled:
+        increment_metric(session, "memory_resolution_events", labels={"resolution": "conflict_recompute", "memory_type": "__all__"}, value=float(reconciled))
+    return {"reconciled": reconciled}
+
+
+def _process_replay_snapshot_job(session: Session, job: Job) -> dict[str, Any]:
+    snapshot_id = job.payload_jsonb.get("snapshot_id")
+    query = select(RuntimeApiEvent)
+    if snapshot_id:
+        query = query.where(RuntimeApiEvent.config_snapshot_id == snapshot_id)
+    count = len(list(session.scalars(query)))
+    increment_metric(session, "replay_snapshot_events", labels={"snapshot_id": snapshot_id or "__all__"})
+    return {"snapshot_id": snapshot_id, "matched_events": count}
+
+
 def process_next_job(session: Session, bundle_resolver) -> Job | None:
     job = session.scalar(
         select(Job).where(Job.status == "queued").order_by(Job.created_at.asc()).limit(1)
     )
     if job is None:
         return None
-    event = session.get(RuntimeApiEvent, job.payload_jsonb["event_id"])
-    if event is None:
-        job.status = "failed"
-        job.error_text = "Event missing"
+    job.status = "running"
+    job.attempts += 1
+    job.locked_at = utcnow()
+    session.commit()
+    try:
+        if job.job_type == "persist_event":
+            event = session.get(RuntimeApiEvent, job.payload_jsonb["event_id"])
+            if event is None:
+                raise ValueError("Event missing")
+            bundle, _snapshot = bundle_resolver(session, event.tenant_id)
+            processed_job = process_job(session, job, bundle)
+            return processed_job
+        if job.job_type == "ttl_cleanup":
+            result = _process_ttl_cleanup_job(session, job)
+        elif job.job_type == "embedding_backfill":
+            result = _process_embedding_backfill_job(session, job)
+        elif job.job_type == "recompute_conflicts":
+            result = _process_recompute_conflicts_job(session, job)
+        elif job.job_type == "replay_snapshot":
+            result = _process_replay_snapshot_job(session, job)
+        else:
+            raise ValueError(f"Unsupported job type: {job.job_type}")
+        job.status = "completed"
+        job.processed_at = utcnow()
+        job.result_jsonb = result
         session.commit()
+        session.refresh(job)
         return job
-    bundle, _snapshot = bundle_resolver(session, event.tenant_id)
-    return process_job(session, job, bundle)
+    except Exception as exc:
+        job.status = "failed"
+        job.error_text = str(exc)
+        job.processed_at = utcnow()
+        session.commit()
+        session.refresh(job)
+        return job
 
 
 def forget_memories(session: Session, request: ForgetRequest, config_snapshot_id: str) -> dict[str, int]:
@@ -396,11 +679,30 @@ def forget_memories(session: Session, request: ForgetRequest, config_snapshot_id
         memory.valid_to = utcnow()
 
     relation_count = 0
-    if request.relation_type:
-        relations = list(
-            session.scalars(
-                select(Relation).where(Relation.tenant_id == request.tenant_id, Relation.relation_type == request.relation_type)
+    subject = session.scalar(
+        select(Entity).where(
+            Entity.tenant_id == request.tenant_id,
+            Entity.entity_type == "User",
+            Entity.canonical_key == request.user_id,
+        )
+    )
+    if request.relation_type and subject is not None:
+        relation_query = select(Relation).where(
+            Relation.tenant_id == request.tenant_id,
+            Relation.subject_entity_id == subject.entity_id,
+            Relation.relation_type == request.relation_type,
+        )
+        if request.canonical_key:
+            object_entity = session.scalar(
+                select(Entity).where(
+                    Entity.tenant_id == request.tenant_id,
+                    Entity.canonical_key == request.canonical_key,
+                )
             )
+            if object_entity is not None:
+                relation_query = relation_query.where(Relation.object_entity_id == object_entity.entity_id)
+        relations = list(
+            session.scalars(relation_query)
         )
         for relation in relations:
             relation.state = "deleted"
@@ -425,6 +727,15 @@ def _cosine_similarity(left: list[float] | None, right: list[float] | None) -> f
     left_norm = math.sqrt(sum(a * a for a in left_values)) or 1.0
     right_norm = math.sqrt(sum(b * b for b in right_values)) or 1.0
     return max(0.0, min(numerator / (left_norm * right_norm), 1.0))
+
+
+def _snapshot_context(session: Session, snapshot_id: str | None) -> tuple[str, str]:
+    if not snapshot_id:
+        return "", get_settings().environment
+    snapshot = session.get(ConfigPublication, snapshot_id)
+    if snapshot is None:
+        return "", get_settings().environment
+    return snapshot.scope, snapshot.environment
 
 
 def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryResult]:
@@ -452,6 +763,7 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
             )
         ) or 0
         recency = _recency_score(memory.updated_at)
+        scope, environment = _snapshot_context(session, memory.config_snapshot_id)
         results.append(
             QueryResult(
                 record_type="memory",
@@ -464,10 +776,13 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
                 sensitivity=memory.sensitivity,
                 config_snapshot_id=memory.config_snapshot_id,
                 evidence_count=evidence_count,
+                tenant_id=memory.tenant_id,
+                scope=scope,
+                environment=environment,
                 semantic_relevance=1.0,
                 recency_score=recency,
-                final_score=1.0 + (memory.confidence * 0.25) + (memory.importance * 0.2) + (recency * 0.1),
-                payload=memory.value_jsonb,
+                final_score=100.0 + (memory.confidence * 0.25) + (memory.importance * 0.2) + (recency * 0.1),
+                payload=_restored_memory_payload(memory),
             )
         )
 
@@ -483,6 +798,7 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
         relation_query = relation_query.where(Relation.relation_type == request.memory_type)
     for relation, entity in session.execute(relation_query):
         recency = _recency_score(relation.updated_at)
+        scope, environment = _snapshot_context(session, relation.config_snapshot_id)
         results.append(
             QueryResult(
                 record_type="relation",
@@ -495,9 +811,12 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
                 sensitivity="S2_PERSONAL",
                 config_snapshot_id=relation.config_snapshot_id,
                 evidence_count=relation.evidence_count,
+                tenant_id=relation.tenant_id,
+                scope=scope,
+                environment=environment,
                 semantic_relevance=0.6,
                 recency_score=recency,
-                final_score=(0.45 * 0.6) + (0.25 * relation.strength) + (0.20 * relation.strength) + (0.10 * recency),
+                final_score=10.0 + (0.45 * 0.6) + (0.25 * relation.strength) + (0.20 * relation.strength) + (0.10 * recency),
                 payload=entity.attributes_jsonb,
             )
         )
@@ -519,6 +838,7 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
             for memory in session.scalars(vector_query):
                 recency = _recency_score(memory.updated_at)
                 semantic = _cosine_similarity(memory.embedding, query_vector)
+                scope, environment = _snapshot_context(session, memory.config_snapshot_id)
                 results.append(
                     QueryResult(
                         record_type="memory",
@@ -531,20 +851,27 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
                         sensitivity=memory.sensitivity,
                         config_snapshot_id=memory.config_snapshot_id,
                         evidence_count=0,
+                        tenant_id=memory.tenant_id,
+                        scope=scope,
+                        environment=environment,
                         semantic_relevance=semantic,
                         recency_score=recency,
                         final_score=(0.45 * semantic)
                         + (0.25 * memory.confidence)
                         + (0.20 * memory.importance)
                         + (0.10 * recency),
-                        payload=memory.value_jsonb,
+                        payload=_restored_memory_payload(memory),
                     )
                 )
 
     deduped: dict[tuple[str, str], QueryResult] = {}
     for result in sorted(results, key=lambda item: item.final_score, reverse=True):
         deduped.setdefault((result.record_type, result.record_id), result)
-    return list(deduped.values())[: request.top_k]
+    final_results = list(deduped.values())[: request.top_k]
+    increment_metric(session, "retrieval_requests", labels={"tenant_id": request.tenant_id})
+    for result in final_results:
+        increment_metric(session, "retrieval_hits", labels={"memory_type": result.memory_type})
+    return final_results
 
 
 def list_user_memories(session: Session, tenant_id: str, user_id: str) -> list[dict[str, Any]]:
@@ -554,7 +881,7 @@ def list_user_memories(session: Session, tenant_id: str, user_id: str) -> list[d
             "memory_id": memory.memory_id,
             "memory_type": memory.memory_type,
             "state": memory.state,
-            "value": memory.value_jsonb,
+            "value": _restored_memory_payload(memory),
             "config_snapshot_id": memory.config_snapshot_id,
             "updated_at": memory.updated_at.isoformat(),
         }
@@ -589,12 +916,13 @@ def decision_records(session: Session, *, tenant_id: str | None = None) -> list[
             "title": event.api_name,
             "action": (event.decision_jsonb or {}).get("action", event.status),
             "status": "blocked" if (event.decision_jsonb or {}).get("action") == "BLOCK" else "accepted",
-            "scope": "",
+            "scope": _snapshot_context(session, event.config_snapshot_id)[0],
             "tenant": event.tenant_id,
-            "environment": "",
+            "environment": _snapshot_context(session, event.config_snapshot_id)[1],
             "reason_code": ",".join((event.decision_jsonb or {}).get("reason_codes", [])),
+            "reason_codes": (event.decision_jsonb or {}).get("reason_codes", []),
             "config_snapshot_id": event.config_snapshot_id,
-            "evidence": event.event_id,
+            "evidence": {"event_id": event.event_id, "api_name": event.api_name},
             "timestamp": event.occurred_at.isoformat(),
         }
         for event in session.scalars(query)

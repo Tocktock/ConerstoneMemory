@@ -12,7 +12,7 @@ export default function LoginPage() {
             <Badge tone="accent">MemoryEngine v1</Badge>
             <h1 className="text-4xl font-semibold tracking-tight text-white">Operator login</h1>
             <p className="max-w-2xl text-sm leading-6 text-slate-300">
-              The console is wired to the local API contract and falls back to the embedded demo client until the backend is available.
+              The console is wired to the live API contract only. Backend outages are surfaced as explicit errors.
             </p>
           </div>
           <div className="grid gap-3 md:grid-cols-3">
@@ -34,9 +34,9 @@ export default function LoginPage() {
         <div className="space-y-4">
           <LoginForm />
           <Card className="space-y-3 text-sm text-slate-300">
-            <div className="label">Demo accounts</div>
-            <p>Use `operator@memoryengine.local`, `approver@memoryengine.local`, or `admin@memoryengine.local` to seed different local roles.</p>
-            <p>The local password matches the role name, for example `operator` or `admin`.</p>
+            <div className="label">Live backend</div>
+            <p>Use your real operator account against the configured API boundary.</p>
+            <p>If the service is unavailable, the login form will show the backend error directly.</p>
           </Card>
         </div>
       </div>

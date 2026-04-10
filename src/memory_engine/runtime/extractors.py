@@ -17,6 +17,7 @@ def address_parser(fields: dict[str, Any]) -> dict[str, Any] | None:
         "value": {"address": normalized, "summary": normalized.split(",")[0]},
         "canonical_key": normalize_key(normalized),
         "sensitivity": "S2_PERSONAL",
+        "field_sensitivity_tags": ["S2_PERSONAL"],
     }
 
 
@@ -29,6 +30,7 @@ def topic_extractor(fields: dict[str, Any]) -> dict[str, Any] | None:
         "value": {"topic": normalized, "raw": str(source)},
         "canonical_key": normalized,
         "sensitivity": "S1_INTERNAL",
+        "field_sensitivity_tags": ["S1_INTERNAL"],
     }
 
 
@@ -42,6 +44,7 @@ def customer_parser(fields: dict[str, Any]) -> dict[str, Any] | None:
         "value": {"customer": customer, "domain": domain, "canonical_customer_id": canonical},
         "canonical_key": canonical,
         "sensitivity": "S2_PERSONAL",
+        "field_sensitivity_tags": ["S2_PERSONAL"],
     }
 
 
@@ -50,4 +53,3 @@ EXTRACTOR_REGISTRY = {
     "topic_extractor": topic_extractor,
     "customer_parser": customer_parser,
 }
-

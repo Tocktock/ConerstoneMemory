@@ -2,11 +2,17 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { client } from "@/lib/api/client";
 import type { Session } from "@/lib/api/types";
 import { Badge, Button, Card, cx } from "@/components/ui";
+
+const ConsoleSessionContext = createContext<Session | null>(null);
+
+export function useConsoleSession() {
+  return useContext(ConsoleSessionContext);
+}
 
 const navGroups = [
   {
@@ -23,6 +29,7 @@ const navGroups = [
       { href: "/validation", label: "Validation" },
       { href: "/simulation", label: "Simulation" },
       { href: "/publication", label: "Publication" },
+      { href: "/rollback", label: "Rollback" },
     ],
   },
   {
@@ -55,21 +62,39 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
-  const apiBase = process.env.NEXT_PUBLIC_MEMORYENGINE_API_BASE_URL || "mock://local-demo";
+  const [error, setError] = useState<string | null>(null);
+  const apiBase = process.env.NEXT_PUBLIC_MEMORYENGINE_API_BASE_URL || "";
 
-  useEffect(() => {
+  const loadSession = () => {
     let active = true;
-    client.auth.me().then((value) => {
-      if (!active) {
-        return;
-      }
-      setSession(value);
-      setReady(true);
-    });
+    setReady(false);
+    setError(null);
+    client.auth
+      .me()
+      .then((value) => {
+        if (!active) {
+          return;
+        }
+        setSession(value);
+        setReady(true);
+      })
+      .catch((requestError) => {
+        if (!active) {
+          return;
+        }
+        setSession(null);
+        setError(requestError instanceof Error ? requestError.message : "Unable to reach the backend.");
+        setReady(true);
+      });
 
     return () => {
       active = false;
     };
+  };
+
+  useEffect(() => {
+    const cancel = loadSession();
+    return cancel;
   }, []);
 
   const initials = useMemo(() => {
@@ -83,9 +108,12 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
   }, [session]);
 
   const signOut = async () => {
-    await client.auth.logout();
-    setSession(null);
-    router.push("/login");
+    try {
+      await client.auth.logout();
+    } finally {
+      setSession(null);
+      router.push("/login");
+    }
   };
 
   if (!ready) {
@@ -93,8 +121,25 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
       <div className="grid min-h-screen place-items-center px-6">
         <Card className="w-full max-w-md space-y-4 text-center">
           <div className="label">Loading console</div>
-          <div className="text-lg font-semibold text-white">Checking local session state</div>
-          <p className="text-sm text-slate-400">The mock API boundary and auth session are initializing.</p>
+          <div className="text-lg font-semibold text-white">Checking session state</div>
+          <p className="text-sm text-slate-400">Contacting the live backend and resolving the current session.</p>
+        </Card>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="grid min-h-screen place-items-center px-6">
+        <Card className="w-full max-w-xl space-y-4 text-center">
+          <div className="label">Backend unavailable</div>
+          <div className="text-2xl font-semibold text-white">Operator console cannot start</div>
+          <p className="text-sm text-slate-300">{error}</p>
+          <div className="flex items-center justify-center gap-3">
+            <Button onClick={() => void loadSession()}>Retry</Button>
+            <Badge tone="danger">Live backend only</Badge>
+          </div>
+          {apiBase ? <div className="break-all text-xs text-slate-400">{apiBase}</div> : null}
         </Card>
       </div>
     );
@@ -107,11 +152,11 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
           <div className="label">Authentication required</div>
           <div className="text-2xl font-semibold text-white">Operator console locked</div>
           <p className="text-sm text-slate-300">
-            This frontend is wired to the expected local API boundary and falls back to the embedded demo client until the backend is online.
+            Sign in against the live backend to continue. This console does not use an embedded session fallback.
           </p>
           <div className="flex items-center justify-center gap-3">
             <Button onClick={() => router.push("/login")}>Go to login</Button>
-            <Badge tone="accent">{apiBase}</Badge>
+            {apiBase ? <Badge tone="accent">{apiBase}</Badge> : null}
           </div>
         </Card>
       </div>
@@ -119,8 +164,9 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen px-4 py-4 lg:px-6">
-      <div className="grid min-h-[calc(100vh-2rem)] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+    <ConsoleSessionContext.Provider value={session}>
+      <div className="min-h-screen px-4 py-4 lg:px-6">
+        <div className="grid min-h-[calc(100vh-2rem)] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="panel-strong flex flex-col gap-5 p-5">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -157,7 +203,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
           <div className="mt-auto space-y-3">
             <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
               <div className="label">Runtime</div>
-              <div className="mt-2 text-white">Local API boundary</div>
+              <div className="mt-2 text-white">Configured API boundary</div>
               <div className="mt-1 break-all text-slate-400">{apiBase}</div>
             </div>
             <Button variant="secondary" onClick={signOut} className="w-full">
@@ -182,7 +228,8 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
 
           <div className="space-y-4 pb-6">{children}</div>
         </main>
+        </div>
       </div>
-    </div>
+    </ConsoleSessionContext.Provider>
   );
 }

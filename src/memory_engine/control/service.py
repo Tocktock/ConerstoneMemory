@@ -6,10 +6,11 @@ from typing import Any
 
 import yaml
 from pydantic import ValidationError
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
 from memory_engine.auth.security import AuthUser
+from memory_engine.config.settings import get_settings
 from memory_engine.control.schemas import (
     APIOntologyDefinition,
     ConfigDocumentResponse,
@@ -29,6 +30,8 @@ from memory_engine.control.schemas import (
 )
 from memory_engine.db.models import AuditLog, ConfigDocument, ConfigPublication, ValidationResult
 from memory_engine.id_utils import new_id, utcnow
+from memory_engine.ops.metrics import increment_metric
+from memory_engine.runtime.extractors import EXTRACTOR_REGISTRY
 
 
 KIND_ALIASES = {
@@ -76,6 +79,17 @@ def document_name(kind: str, definition: dict[str, Any], fallback: str | None = 
     )
 
 
+def apply_document_name(kind: str, definition: dict[str, Any], name: str | None) -> dict[str, Any]:
+    if not name:
+        return definition
+    updated = dict(definition)
+    if kind == "policy_profile":
+        updated["profile_name"] = name
+    else:
+        updated["document_name"] = name
+    return updated
+
+
 def serialize_document(document: ConfigDocument) -> ConfigDocumentResponse:
     return ConfigDocumentResponse(
         id=document.id,
@@ -85,13 +99,17 @@ def serialize_document(document: ConfigDocument) -> ConfigDocumentResponse:
         status=document.status,
         scope=document.scope,
         tenant_id=document.tenant_id,
+        base_version=document.base_version,
         checksum=document.checksum,
         definition_json=document.definition_jsonb,
         definition_yaml=to_yaml(document.definition_jsonb),
         created_by=document.created_by,
+        created_at=document.created_at.isoformat(),
         updated_at=(document.published_at or document.approved_at or document.created_at).isoformat(),
+        approved_at=document.approved_at.isoformat() if document.approved_at else None,
         approved_by=document.approved_by,
         published_by=document.published_by,
+        published_at=document.published_at.isoformat() if document.published_at else None,
     )
 
 
@@ -105,6 +123,10 @@ def create_audit_log(
     target_id: str,
     metadata: dict[str, Any],
 ) -> None:
+    payload = {
+        "environment": get_settings().environment,
+        **metadata,
+    }
     session.add(
         AuditLog(
             id=new_id("audit"),
@@ -113,9 +135,48 @@ def create_audit_log(
             action=action,
             target_kind=target_kind,
             target_id=target_id,
-            metadata_jsonb=metadata,
+            metadata_jsonb=payload,
         )
     )
+
+
+def _publication_response(session: Session, publication: ConfigPublication) -> PublicationResponse:
+    api_doc = get_document_or_404(session, publication.api_ontology_document_id)
+    memory_doc = get_document_or_404(session, publication.memory_ontology_document_id)
+    policy_doc = get_document_or_404(session, publication.policy_profile_document_id)
+    return PublicationResponse(
+        id=publication.id,
+        environment=publication.environment,
+        scope=publication.scope,
+        tenant_id=publication.tenant_id,
+        snapshot_hash=publication.snapshot_hash,
+        is_active=publication.is_active,
+        release_notes=publication.release_notes,
+        published_by=publication.published_by,
+        published_at=publication.published_at,
+        rollback_of=publication.rollback_of,
+        api_ontology_document_id=api_doc.id,
+        memory_ontology_document_id=memory_doc.id,
+        policy_profile_document_id=policy_doc.id,
+        api_ontology_document_name=document_name(api_doc.kind, api_doc.definition_jsonb),
+        memory_ontology_document_name=document_name(memory_doc.kind, memory_doc.definition_jsonb),
+        policy_profile_document_name=document_name(policy_doc.kind, policy_doc.definition_jsonb),
+        api_ontology_document_version=api_doc.version,
+        memory_ontology_document_version=memory_doc.version,
+        policy_profile_document_version=policy_doc.version,
+    )
+
+
+def _ensure_bundle_scope(bundle: dict[str, ConfigDocument], *, scope: str, tenant_id: str | None) -> None:
+    for document in bundle.values():
+        if document.scope != scope:
+            raise ValueError(
+                f"Document {document.id} has scope {document.scope}; publish scope must match the selected documents"
+            )
+        if document.tenant_id != tenant_id:
+            raise ValueError(
+                f"Document {document.id} has tenant_id {document.tenant_id!r}; publish tenant_id must match"
+            )
 
 
 def _definition_model(kind: str):
@@ -158,6 +219,9 @@ def validate_definition(
 
     if kind == "api_ontology":
         memory_types = reference_memory_types or set()
+        precedence_keys = set()
+        if policy_definition:
+            precedence_keys = set(PolicyProfileDefinition.model_validate(policy_definition).source_precedence)
         for entry in parsed.entries:
             for memory_type in entry.candidate_memory_types:
                 if memory_types and memory_type not in memory_types:
@@ -171,6 +235,29 @@ def validate_definition(
                             document_id=None,
                         )
                     )
+            for extractor_name in entry.extractors:
+                if extractor_name not in EXTRACTOR_REGISTRY:
+                    issues.append(
+                        ValidationIssue(
+                            id=new_id("validation"),
+                            severity="error",
+                            path=f"entries.{entry.api_name}.extractors",
+                            code="extractor.unknown",
+                            message=f"Unknown extractor: {extractor_name}",
+                            document_id=None,
+                        )
+                    )
+            if precedence_keys and entry.source_precedence_key not in precedence_keys:
+                issues.append(
+                    ValidationIssue(
+                        id=new_id("validation"),
+                        severity="error",
+                        path=f"entries.{entry.api_name}.source_precedence_key",
+                        code="precedence.unknown",
+                        message=f"Unknown source_precedence_key: {entry.source_precedence_key}",
+                        document_id=None,
+                    )
+                )
     if kind == "memory_ontology" and policy_definition:
         ceilings = (
             PolicyProfileDefinition.model_validate(policy_definition)
@@ -194,12 +281,25 @@ def validate_definition(
     return issues
 
 
-def list_documents(session: Session, kind: str | None = None) -> list[ConfigDocumentResponse]:
+def list_documents(
+    session: Session,
+    kind: str | None = None,
+    *,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+    status: str | None = None,
+) -> list[ConfigDocumentResponse]:
     query: Select[tuple[ConfigDocument]] = select(ConfigDocument).order_by(
         ConfigDocument.kind, ConfigDocument.version.desc(), ConfigDocument.created_at.desc()
     )
     if kind:
         query = query.where(ConfigDocument.kind == normalize_kind(kind))
+    if scope:
+        query = query.where(ConfigDocument.scope == scope)
+    if tenant_id:
+        query = query.where(ConfigDocument.tenant_id == tenant_id)
+    if status:
+        query = query.where(ConfigDocument.status == status)
     return [serialize_document(row) for row in session.scalars(query)]
 
 
@@ -219,7 +319,7 @@ def save_document(
     document_id: str | None = None,
 ) -> ConfigDocumentResponse:
     normalized_kind = normalize_kind(kind)
-    definition = load_definition(payload)
+    definition = apply_document_name(normalized_kind, load_definition(payload), payload.name)
     checksum = calculate_checksum(definition)
 
     if document_id is None:
@@ -253,26 +353,79 @@ def save_document(
             action="config.create",
             target_kind=normalized_kind,
             target_id=document.id,
-            metadata={"scope": payload.scope, "tenant_id": payload.tenant_id},
+            metadata={
+                "scope": payload.scope,
+                "tenant_id": payload.tenant_id,
+                "version": document.version,
+                "after_checksum": checksum,
+            },
         )
     else:
         document = get_document_or_404(session, document_id)
-        if document.status == "published":
-            raise ValueError("Published documents are immutable")
-        document.definition_jsonb = definition
-        document.checksum = checksum
-        document.status = "draft"
-        document.approved_by = None
-        document.approved_at = None
-        create_audit_log(
-            session,
-            actor=actor.email,
-            role=actor.role,
-            action="config.update",
-            target_kind=normalized_kind,
-            target_id=document.id,
-            metadata={"scope": document.scope, "tenant_id": document.tenant_id},
-        )
+        if document.status == "archived":
+            raise ValueError("Archived documents are immutable")
+
+        if document.status in {"approved", "published"}:
+            latest_version = session.scalar(
+                select(ConfigDocument.version)
+                .where(
+                    ConfigDocument.kind == normalized_kind,
+                    ConfigDocument.scope == document.scope,
+                    ConfigDocument.tenant_id == document.tenant_id,
+                )
+                .order_by(ConfigDocument.version.desc())
+                .limit(1)
+            )
+            next_document = ConfigDocument(
+                id=new_id("cfgdoc"),
+                kind=normalized_kind,
+                scope=document.scope,
+                tenant_id=document.tenant_id,
+                version=(latest_version or document.version) + 1,
+                status="draft",
+                base_version=document.version,
+                definition_jsonb=definition,
+                checksum=checksum,
+                created_by=actor.email,
+            )
+            session.add(next_document)
+            create_audit_log(
+                session,
+                actor=actor.email,
+                role=actor.role,
+                action="config.revise",
+                target_kind=normalized_kind,
+                target_id=next_document.id,
+                metadata={
+                    "scope": next_document.scope,
+                    "tenant_id": next_document.tenant_id,
+                    "version": next_document.version,
+                    "base_version": document.version,
+                    "before_checksum": document.checksum,
+                    "after_checksum": checksum,
+                },
+            )
+            document = next_document
+        else:
+            document.definition_jsonb = definition
+            document.checksum = checksum
+            document.status = "draft"
+            document.approved_by = None
+            document.approved_at = None
+            create_audit_log(
+                session,
+                actor=actor.email,
+                role=actor.role,
+                action="config.update",
+                target_kind=normalized_kind,
+                target_id=document.id,
+                metadata={
+                    "scope": document.scope,
+                    "tenant_id": document.tenant_id,
+                    "version": document.version,
+                    "after_checksum": checksum,
+                },
+            )
 
     session.commit()
     session.refresh(document)
@@ -281,8 +434,8 @@ def save_document(
 
 def approve_document(session: Session, document_id: str, actor: AuthUser) -> ConfigDocument:
     document = get_document_or_404(session, document_id)
-    if document.status not in {"draft", "validated"}:
-        raise ValueError("Only draft or validated documents can be approved")
+    if document.status != "validated":
+        raise ValueError("Only validated documents can be approved")
     document.status = "approved"
     document.approved_by = actor.email
     document.approved_at = utcnow()
@@ -293,7 +446,48 @@ def approve_document(session: Session, document_id: str, actor: AuthUser) -> Con
         action="config.approve",
         target_kind=document.kind,
         target_id=document.id,
-        metadata={"scope": document.scope, "tenant_id": document.tenant_id},
+        metadata={
+            "scope": document.scope,
+            "tenant_id": document.tenant_id,
+            "version": document.version,
+            "checksum": document.checksum,
+        },
+    )
+    session.commit()
+    session.refresh(document)
+    return document
+
+
+def archive_document(session: Session, document_id: str, actor: AuthUser) -> ConfigDocument:
+    document = get_document_or_404(session, document_id)
+    if document.status == "archived":
+        return document
+    active_reference = session.scalar(
+        select(ConfigPublication).where(
+            ConfigPublication.is_active.is_(True),
+            (
+                (ConfigPublication.api_ontology_document_id == document.id)
+                | (ConfigPublication.memory_ontology_document_id == document.id)
+                | (ConfigPublication.policy_profile_document_id == document.id)
+            ),
+        )
+    )
+    if active_reference is not None:
+        raise ValueError("Active snapshot documents cannot be archived")
+    document.status = "archived"
+    create_audit_log(
+        session,
+        actor=actor.email,
+        role=actor.role,
+        action="config.archive",
+        target_kind=document.kind,
+        target_id=document.id,
+        metadata={
+            "scope": document.scope,
+            "tenant_id": document.tenant_id,
+            "version": document.version,
+            "checksum": document.checksum,
+        },
     )
     session.commit()
     session.refresh(document)
@@ -317,10 +511,8 @@ def _resolve_validation_bundle(session: Session, request: ValidateRequest) -> di
         bundle[document.kind] = document
 
     if set(bundle) != {"api_ontology", "memory_ontology", "policy_profile"}:
-        active = get_active_publication(
-            session, environment=request.environment, scope="global", tenant_id=request.tenant_id
-        )
-        if active:
+        active = resolve_snapshot(session, environment=request.environment, tenant_id=request.tenant_id)
+        if active is not None:
             for kind, field in {
                 "api_ontology": active.api_ontology_document_id,
                 "memory_ontology": active.memory_ontology_document_id,
@@ -356,11 +548,7 @@ def validate_documents(session: Session, request: ValidateRequest) -> Validation
         issues.extend(document_issues)
 
     for document in bundle.values():
-        session.execute(
-            update(ValidationResult)
-            .where(ValidationResult.config_document_id == document.id)
-            .values(message=ValidationResult.message)
-        )
+        session.execute(delete(ValidationResult).where(ValidationResult.config_document_id == document.id))
         for issue in issues:
             if issue.document_id != document.id:
                 continue
@@ -374,11 +562,19 @@ def validate_documents(session: Session, request: ValidateRequest) -> Validation
                     message=issue.message,
                 )
             )
-        if not any(issue.severity == "error" for issue in issues):
+        has_document_error = any(issue.severity == "error" and issue.document_id == document.id for issue in issues)
+        if not has_document_error and document.status not in {"published", "archived"}:
             document.status = "validated"
     session.commit()
 
-    status = "fail" if any(issue.severity == "error" for issue in issues) else "pass"
+    if any(issue.severity == "error" for issue in issues):
+        status = "fail"
+        increment_metric(session, "config_validation_failures", labels={"environment": request.environment})
+        session.commit()
+    elif issues:
+        status = "warn"
+    else:
+        status = "pass"
     return ValidationResponse(
         status=status,
         validated_document_ids=[document.id for document in bundle.values()],
@@ -461,8 +657,9 @@ def _resolve_publish_bundle(session: Session, request: PublishRequest) -> dict[s
 
 def publish_documents(session: Session, request: PublishRequest, actor: AuthUser) -> PublicationResponse:
     bundle = _resolve_publish_bundle(session, request)
-    if any(document.status != "approved" for document in bundle.values()):
-        raise ValueError("All documents must be approved before publish")
+    _ensure_bundle_scope(bundle, scope=request.scope, tenant_id=request.tenant_id)
+    if any(document.status not in {"approved", "published"} for document in bundle.values()):
+        raise ValueError("All documents must be approved or previously published before publish")
 
     validation = validate_documents(
         session,
@@ -492,15 +689,17 @@ def publish_documents(session: Session, request: PublishRequest, actor: AuthUser
         memory_ontology_document_id=bundle["memory_ontology"].id,
         policy_profile_document_id=bundle["policy_profile"].id,
         snapshot_hash=_snapshot_hash(list(bundle.values()), request.environment, request.scope, request.tenant_id),
+        release_notes=request.release_notes,
         is_active=True,
         published_by=actor.email,
         rollback_of=None,
     )
     session.add(publication)
     for document in bundle.values():
-        document.status = "published"
-        document.published_by = actor.email
-        document.published_at = utcnow()
+        if document.status != "published":
+            document.status = "published"
+            document.published_by = actor.email
+            document.published_at = utcnow()
     create_audit_log(
         session,
         actor=actor.email,
@@ -513,11 +712,25 @@ def publish_documents(session: Session, request: PublishRequest, actor: AuthUser
             "tenant_id": request.tenant_id,
             "environment": request.environment,
             "release_notes": request.release_notes,
+            "snapshot_hash": publication.snapshot_hash,
+            "documents": {
+                kind: {"id": document.id, "version": document.version, "checksum": document.checksum}
+                for kind, document in bundle.items()
+            },
+        },
+    )
+    increment_metric(
+        session,
+        "config_publish_events",
+        labels={
+            "environment": request.environment,
+            "scope": request.scope,
+            "tenant_id": request.tenant_id or "__global__",
         },
     )
     session.commit()
     session.refresh(publication)
-    return PublicationResponse.model_validate(publication, from_attributes=True)
+    return _publication_response(session, publication)
 
 
 def rollback_publication(session: Session, request: RollbackRequest, actor: AuthUser) -> PublicationResponse:
@@ -540,6 +753,7 @@ def rollback_publication(session: Session, request: RollbackRequest, actor: Auth
         memory_ontology_document_id=target.memory_ontology_document_id,
         policy_profile_document_id=target.policy_profile_document_id,
         snapshot_hash=target.snapshot_hash,
+        release_notes=f"Rollback to snapshot {target.id}",
         is_active=True,
         published_by=actor.email,
         rollback_of=target.id,
@@ -552,20 +766,61 @@ def rollback_publication(session: Session, request: RollbackRequest, actor: Auth
         action="config.rollback",
         target_kind="config_snapshot",
         target_id=rollback.id,
-        metadata={"rollback_of": target.id},
+        metadata={
+            "rollback_of": target.id,
+            "scope": target.scope,
+            "tenant_id": target.tenant_id,
+            "environment": target.environment,
+            "snapshot_hash": target.snapshot_hash,
+        },
+    )
+    increment_metric(
+        session,
+        "config_rollback_events",
+        labels={
+            "environment": target.environment,
+            "scope": target.scope,
+            "tenant_id": target.tenant_id or "__global__",
+        },
     )
     session.commit()
     session.refresh(rollback)
-    return PublicationResponse.model_validate(rollback, from_attributes=True)
+    return _publication_response(session, rollback)
 
 
-def list_publications(session: Session) -> list[PublicationResponse]:
+def list_publications(
+    session: Session,
+    *,
+    environment: str | None = None,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+    is_active: bool | None = None,
+) -> list[PublicationResponse]:
     query = select(ConfigPublication).order_by(ConfigPublication.published_at.desc())
-    return [PublicationResponse.model_validate(row, from_attributes=True) for row in session.scalars(query)]
+    if environment is not None:
+        query = query.where(ConfigPublication.environment == environment)
+    if scope is not None:
+        query = query.where(ConfigPublication.scope == scope)
+    if tenant_id is not None:
+        query = query.where(ConfigPublication.tenant_id == tenant_id)
+    if is_active is not None:
+        query = query.where(ConfigPublication.is_active.is_(is_active))
+    return [_publication_response(session, row) for row in session.scalars(query)]
 
 
-def list_audit_logs(session: Session) -> list[dict[str, Any]]:
+def list_audit_logs(
+    session: Session,
+    *,
+    action: str | None = None,
+    target_kind: str | None = None,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+) -> list[dict[str, Any]]:
     query = select(AuditLog).order_by(AuditLog.created_at.desc())
+    if action is not None:
+        query = query.where(AuditLog.action == action)
+    if target_kind is not None:
+        query = query.where(AuditLog.target_kind == target_kind)
     return [
         {
             "id": row.id,
@@ -573,11 +828,21 @@ def list_audit_logs(session: Session) -> list[dict[str, Any]]:
             "role": row.role,
             "action": row.action,
             "document_kind": row.target_kind,
+            "document_id": row.target_id,
+            "scope": row.metadata_jsonb.get("scope"),
+            "tenant_id": row.metadata_jsonb.get("tenant_id"),
+            "environment": row.metadata_jsonb.get("environment"),
             "document_version": row.metadata_jsonb.get("version", ""),
+            "before_checksum": row.metadata_jsonb.get("before_checksum"),
+            "after_checksum": row.metadata_jsonb.get("after_checksum"),
+            "snapshot_hash": row.metadata_jsonb.get("snapshot_hash"),
+            "rollback_of": row.metadata_jsonb.get("rollback_of"),
             "timestamp": row.created_at.isoformat(),
             "diff_ref": row.metadata_jsonb,
         }
         for row in session.scalars(query)
+        if (scope is None or row.metadata_jsonb.get("scope") == scope)
+        and (tenant_id is None or row.metadata_jsonb.get("tenant_id") == tenant_id)
     ]
 
 

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     )
     auth_secret: str = "dev-secret-change-me"
     auth_token_ttl_minutes: int = 480
+    sensitive_encryption_key: str | None = None
     auth_seed_users: str = (
         "viewer@memoryengine.local:viewer:viewer;"
         "editor@memoryengine.local:editor:editor;"

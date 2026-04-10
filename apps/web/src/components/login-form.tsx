@@ -43,7 +43,7 @@ export function LoginForm() {
         </Button>
       </form>
       <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-        The page first tries the local API boundary and falls back to the embedded demo session when the backend is unavailable.
+        This form talks to the live backend only. If the API is unavailable, you will see the request error directly.
       </div>
       <div className="rounded-2xl border border-cyan-300/15 bg-cyan-400/5 p-4 text-sm text-cyan-50">
         Seeded local passwords match the role name: `viewer`, `editor`, `approver`, `operator`, or `admin`.

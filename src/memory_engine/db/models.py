@@ -50,6 +50,7 @@ class ConfigPublication(Base):
         String(64), ForeignKey("control.config_documents.id"), nullable=False
     )
     snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    release_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     published_by: Mapped[str] = mapped_column(String(255), nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -124,6 +125,21 @@ class SignalCounter(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class SignalObservation(Base):
+    __tablename__ = "signal_observations"
+    __table_args__ = {"schema": "runtime"}
+
+    observation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    signal_key: Mapped[str] = mapped_column(String(255), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    memory_type: Mapped[str] = mapped_column(String(128), index=True)
+    canonical_object_key: Mapped[str] = mapped_column(String(255), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    source_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class Entity(Base):
     __tablename__ = "entities"
     __table_args__ = (
@@ -165,11 +181,15 @@ class Memory(Base):
         String(64), ForeignKey("runtime.entities.entity_id"), nullable=True
     )
     value_jsonb: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    protected_value_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     canonical_key: Mapped[str] = mapped_column(String(255), index=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     sensitivity: Mapped[str] = mapped_column(String(32), nullable=False)
+    ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_precedence_key: Mapped[str] = mapped_column(String(128), nullable=False, default="weak_free_text_inference")
+    source_precedence_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(8), nullable=True)
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -191,6 +211,8 @@ class Relation(Base):
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     strength: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_precedence_key: Mapped[str] = mapped_column(String(128), nullable=False, default="weak_free_text_inference")
+    source_precedence_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     config_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -232,11 +254,15 @@ class Job(Base):
 
 class MetricRollup(Base):
     __tablename__ = "metrics_rollups"
-    __table_args__ = {"schema": "ops"}
+    __table_args__ = (
+        UniqueConstraint("metric_name", "bucket_start", "bucket_end", "labels_hash", name="uq_metric_rollup_bucket"),
+        {"schema": "ops"},
+    )
 
-    metric_name: Mapped[str] = mapped_column(String(128), primary_key=True)
-    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
-    bucket_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    rollup_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    metric_name: Mapped[str] = mapped_column(String(128), index=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    bucket_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    labels_hash: Mapped[str] = mapped_column(String(128), index=True)
     labels_jsonb: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-

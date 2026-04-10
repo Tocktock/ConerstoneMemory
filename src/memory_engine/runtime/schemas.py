@@ -22,10 +22,14 @@ class CandidateMemory(BaseModel):
     canonical_key: str
     confidence: float
     sensitivity: str
+    field_sensitivity_tags: list[str] = Field(default_factory=list)
+    classifier_sensitivity: str = "S1_INTERNAL"
     value: dict[str, Any]
     relation_type: str | None = None
     extractor: str
     source_trust: int
+    source_precedence_key: str
+    source_precedence_score: int
 
 
 class DecisionEnvelope(BaseModel):
@@ -64,8 +68,10 @@ class QueryResult(BaseModel):
     sensitivity: str
     config_snapshot_id: str
     evidence_count: int
+    tenant_id: str
+    scope: str
+    environment: str
     semantic_relevance: float
     recency_score: float
     final_score: float
     payload: dict[str, Any]
-

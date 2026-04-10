@@ -3,11 +3,38 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 ScopeName = Literal["global", "environment", "tenant", "emergency_override"]
 DocumentKind = Literal["api_ontology", "memory_ontology", "policy_profile"]
+MethodSemantics = Literal["READ", "WRITE", "DELETE"]
+CapabilityFamily = Literal[
+    "PROFILE_WRITE",
+    "PREFERENCE_SET",
+    "RELATION_WRITE",
+    "ENTITY_UPSERT",
+    "CONTENT_READ",
+    "SEARCH_READ",
+    "DELETE_FORGET",
+    "UNKNOWN",
+]
+DefaultAction = Literal["BLOCK", "OBSERVE", "SESSION", "UPSERT", "FORGET"]
+RepeatPolicy = Literal["BYPASS", "REQUIRED"]
+MemoryClass = Literal["fact", "relation", "interest", "preference"]
+CardinalityMode = Literal["ONE_ACTIVE", "MANY_UNIQUE_BY_OBJECT", "MANY_SCORED", "MANY_VERSIONED"]
+MergeStrategy = Literal["MERGE_ATTRIBUTES_WHEN_EQUAL", "EVIDENCE_MERGE", "REINFORCE_SCORE", "REPLACE"]
+ConflictStrategy = Literal[
+    "SUPERSEDE_BY_PRECEDENCE",
+    "DEDUP_BY_CANONICAL_OBJECT",
+    "NO_DIRECT_CONFLICT",
+    "CONFLICT",
+    "REJECT",
+]
+EmbedMode = Literal["DISABLED", "SUMMARY", "COARSE_SUMMARY_ONLY"]
+RetrievalMode = Literal["EXACT", "EXACT_THEN_VECTOR", "RELATION_THEN_VECTOR", "VECTOR_PLUS_FILTER"]
+SensitivityLevel = Literal["S0_PUBLIC", "S1_INTERNAL", "S2_PERSONAL", "S3_CONFIDENTIAL", "S4_RESTRICTED"]
+DocumentStatus = Literal["draft", "validated", "approved", "published", "archived"]
 
 
 SENSITIVITY_RANK = {
@@ -22,15 +49,16 @@ SENSITIVITY_RANK = {
 class APIOntologyEntry(BaseModel):
     api_name: str
     enabled: bool
-    capability_family: str
-    method_semantics: str
+    capability_family: CapabilityFamily
+    method_semantics: MethodSemantics
     domain: str
     description: str
     candidate_memory_types: list[str]
-    default_action: str
-    repeat_policy: str
-    sensitivity_hint: str
-    source_trust: int
+    default_action: DefaultAction
+    repeat_policy: RepeatPolicy
+    sensitivity_hint: SensitivityLevel
+    source_trust: int = Field(ge=0, le=100)
+    source_precedence_key: str
     extractors: list[str]
     relation_templates: list[str]
     dedup_strategy_hint: str
@@ -54,21 +82,31 @@ class APIOntologyDefinition(BaseModel):
 class MemoryOntologyEntry(BaseModel):
     memory_type: str
     enabled: bool
-    memory_class: str
+    memory_class: MemoryClass
     subject_type: str
     object_type: str | None = None
     value_type: str | None = None
-    cardinality: str
+    cardinality: CardinalityMode
     identity_strategy: str
-    merge_strategy: str
-    conflict_strategy: str
-    allowed_sensitivity: str
-    embed_mode: str
+    merge_strategy: MergeStrategy
+    conflict_strategy: ConflictStrategy
+    allowed_sensitivity: SensitivityLevel
+    embed_mode: EmbedMode
     default_ttl_days: int | None = None
-    retrieval_mode: str
-    importance_default: float
+    retrieval_mode: RetrievalMode
+    importance_default: float = Field(ge=0.0, le=1.0)
     tenant_override_allowed: bool
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "MemoryOntologyEntry":
+        if bool(self.object_type) == bool(self.value_type):
+            raise ValueError("Exactly one of object_type or value_type must be set")
+        if self.cardinality == "MANY_SCORED" and self.merge_strategy != "REINFORCE_SCORE":
+            raise ValueError("MANY_SCORED memory types must use REINFORCE_SCORE")
+        if self.cardinality == "ONE_ACTIVE" and self.conflict_strategy == "DEDUP_BY_CANONICAL_OBJECT":
+            raise ValueError("ONE_ACTIVE memory types cannot use DEDUP_BY_CANONICAL_OBJECT")
+        return self
 
 
 class MemoryOntologyDefinition(BaseModel):
@@ -84,37 +122,50 @@ class MemoryOntologyDefinition(BaseModel):
 
 
 class FrequencyWeightConfig(BaseModel):
-    decayed_weight: float
-    unique_sessions_30d: float
-    unique_days_30d: float
-    source_diversity_30d: float
+    decayed_weight: float = Field(ge=0.0, le=1.0)
+    unique_sessions_30d: float = Field(ge=0.0, le=1.0)
+    unique_days_30d: float = Field(ge=0.0, le=1.0)
+    source_diversity_30d: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_sum(self) -> "FrequencyWeightConfig":
+        total = self.decayed_weight + self.unique_sessions_30d + self.unique_days_30d + self.source_diversity_30d
+        if round(total, 6) > 1.0:
+            raise ValueError("frequency weights must sum to 1.0 or less")
+        return self
 
 
 class FrequencyThresholds(BaseModel):
-    persist: float
-    observe: float
+    persist: float = Field(ge=0.0, le=1.0)
+    observe: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> "FrequencyThresholds":
+        if self.observe > self.persist:
+            raise ValueError("observe threshold cannot exceed persist threshold")
+        return self
 
 
 class BurstPenalty(BaseModel):
     enabled: bool
-    penalty_value: float
-    same_session_ratio_threshold: float
+    penalty_value: float = Field(ge=0.0, le=1.0)
+    same_session_ratio_threshold: float = Field(ge=0.0, le=1.0)
 
 
 class FrequencyConfig(BaseModel):
-    half_life_days: int
+    half_life_days: int = Field(gt=0)
     weights: FrequencyWeightConfig
     thresholds: FrequencyThresholds
     burst_penalty: BurstPenalty
 
 
 class SensitivityConfig(BaseModel):
-    hard_block_levels: list[str]
-    memory_type_allow_ceiling: dict[str, str]
+    hard_block_levels: list[SensitivityLevel]
+    memory_type_allow_ceiling: dict[str, SensitivityLevel]
 
 
 class ConflictWindowConfig(BaseModel):
-    typo_correction_minutes: int
+    typo_correction_minutes: int = Field(ge=0)
 
 
 class EmbeddingRulesConfig(BaseModel):
@@ -136,6 +187,16 @@ class PolicyProfileDefinition(BaseModel):
     embedding_rules: EmbeddingRulesConfig
     forget_rules: ForgetRulesConfig
 
+    @field_validator("source_precedence")
+    @classmethod
+    def validate_precedence(cls, value: dict[str, int]) -> dict[str, int]:
+        if not value:
+            raise ValueError("source_precedence must not be empty")
+        for item, score in value.items():
+            if score < 0:
+                raise ValueError(f"source_precedence[{item}] must be non-negative")
+        return value
+
 
 class ConfigDocumentUpsertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -152,6 +213,10 @@ class ConfigDocumentUpsertRequest(BaseModel):
     def require_definition(self) -> "ConfigDocumentUpsertRequest":
         if self.definition_json is None and self.definition_yaml is None:
             raise ValueError("definition_json or definition_yaml is required")
+        if self.scope in {"tenant", "emergency_override"} and not self.tenant_id:
+            raise ValueError("tenant_id is required for tenant and emergency_override scopes")
+        if self.scope in {"global", "environment"} and self.tenant_id is not None:
+            raise ValueError("tenant_id is only allowed for tenant and emergency_override scopes")
         return self
 
 
@@ -160,16 +225,20 @@ class ConfigDocumentResponse(BaseModel):
     kind: DocumentKind
     name: str
     version: int
-    status: str
-    scope: str
+    status: DocumentStatus
+    scope: ScopeName
     tenant_id: str | None
+    base_version: int | None
     checksum: str
     definition_json: dict[str, Any]
     definition_yaml: str
     created_by: str
+    created_at: str
     updated_at: str
     approved_by: str | None = None
+    approved_at: str | None = None
     published_by: str | None = None
+    published_at: str | None = None
 
 
 class ValidationIssue(BaseModel):
@@ -199,8 +268,14 @@ class ValidateRequest(BaseModel):
 
 class ApproveResponse(BaseModel):
     id: str
-    status: str
+    status: DocumentStatus
     approved_by: str
+    approved_at: str
+
+
+class ArchiveResponse(BaseModel):
+    id: str
+    status: DocumentStatus
 
 
 class PublishRequest(BaseModel):
@@ -217,16 +292,23 @@ class PublishRequest(BaseModel):
 class PublicationResponse(BaseModel):
     id: str
     environment: str
-    scope: str
+    scope: ScopeName
     tenant_id: str | None
     snapshot_hash: str
     is_active: bool
+    release_notes: str
     published_by: str
     published_at: datetime
     rollback_of: str | None = None
     api_ontology_document_id: str
     memory_ontology_document_id: str
     policy_profile_document_id: str
+    api_ontology_document_name: str
+    memory_ontology_document_name: str
+    policy_profile_document_name: str
+    api_ontology_document_version: int
+    memory_ontology_document_version: int
+    policy_profile_document_version: int
 
 
 class RollbackRequest(BaseModel):

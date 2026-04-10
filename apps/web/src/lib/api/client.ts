@@ -9,28 +9,8 @@ import type {
   SimulationRun,
   ValidationRun,
 } from "@/lib/api/types";
-import {
-  mockExportConfig,
-  mockImportConfig,
-  mockListAuditLogs,
-  mockListConfigs,
-  mockListDecisions,
-  mockListMemories,
-  mockListPublications,
-  mockListSimulations,
-  mockListValidations,
-  mockLogin,
-  mockLogout,
-  mockMe,
-  mockPublishConfig,
-  mockRollbackPublication,
-  mockSaveConfig,
-  mockSimulateConfig,
-  mockValidateConfig,
-} from "@/lib/api/mock";
 
 type RequestOptions = RequestInit & {
-  mockFallback?: () => Promise<unknown>;
   skipAuth?: boolean;
 };
 
@@ -45,9 +25,20 @@ type BackendConfig = {
   status: string;
   scope: string;
   tenant_id?: string | null;
+  environment?: string | null;
+  base_version?: number | null;
+  created_at?: string | null;
+  approved_at?: string | null;
+  published_at?: string | null;
   checksum: string;
   definition_json: Record<string, unknown>;
   definition_yaml: string;
+  summary?: string | null;
+  release_notes?: string | null;
+  snapshot_id?: string | null;
+  snapshot_hash?: string | null;
+  source_precedence_key?: string | null;
+  source_precedence_score?: number | null;
   created_by: string;
   updated_at: string;
   approved_by?: string | null;
@@ -71,6 +62,7 @@ type BackendValidationResponse = {
 
 type BackendSimulationResponse = {
   active_snapshot_id?: string | null;
+  candidate_snapshot_id?: string | null;
   old_decision?: Record<string, unknown> | null;
   new_decision: Record<string, unknown>;
   changed_reason_codes: string[];
@@ -89,9 +81,16 @@ type BackendPublication = {
   published_by: string;
   published_at: string;
   rollback_of?: string | null;
+  release_notes?: string | null;
   api_ontology_document_id: string;
+  api_ontology_document_name?: string | null;
+  api_ontology_document_version?: number | null;
   memory_ontology_document_id: string;
+  memory_ontology_document_name?: string | null;
+  memory_ontology_document_version?: number | null;
   policy_profile_document_id: string;
+  policy_profile_document_name?: string | null;
+  policy_profile_document_version?: number | null;
 };
 
 type BackendDecision = {
@@ -99,12 +98,17 @@ type BackendDecision = {
   title: string;
   action: string;
   status: string;
+  kind?: string;
   scope: string;
   tenant: string;
   environment: string;
   reason_code: string;
+  reason_codes?: string[];
   config_snapshot_id: string;
   evidence: string;
+  evidence_count?: number;
+  document_version?: string;
+  document_kind?: string;
   timestamp: string;
 };
 
@@ -119,7 +123,15 @@ type BackendMemory = {
   sensitivity: string;
   config_snapshot_id: string;
   evidence_count: number;
+  source_precedence_key?: string;
+  source_precedence_score?: number;
+  canonical_key?: string;
+  reason_codes?: string[];
+  environment?: string;
+  scope?: string;
+  tenant_id?: string;
   payload: Record<string, unknown>;
+  protected_value_encrypted?: string | null;
 };
 
 type BackendAudit = {
@@ -129,8 +141,81 @@ type BackendAudit = {
   action: string;
   document_kind: string;
   document_version: string;
+  document_name?: string;
+  scope?: string;
+  tenant?: string;
+  environment?: string;
+  snapshot_id?: string;
+  before_checksum?: string;
+  after_checksum?: string;
+  release_notes?: string;
+  approved_at?: string | null;
+  published_at?: string | null;
   timestamp: string;
   diff_ref: unknown;
+};
+
+type ConfigListFilters = {
+  scope?: string;
+  environment?: string;
+  tenant?: string;
+  status?: string;
+};
+
+type PublicationFilters = ConfigListFilters & {
+  kind?: string;
+};
+
+type DecisionFilters = {
+  scope?: string;
+  environment?: string;
+  tenant?: string;
+  status?: string;
+  kind?: string;
+  query?: string;
+};
+
+type MemoryFilters = {
+  scope?: string;
+  environment?: string;
+  tenant?: string;
+  user?: string;
+  status?: string;
+  type?: string;
+  query?: string;
+};
+
+type AuditFilters = {
+  scope?: string;
+  environment?: string;
+  tenant?: string;
+  status?: string;
+  kind?: string;
+  action?: string;
+  query?: string;
+};
+
+type PublishRequest = {
+  api_ontology_document_id: string;
+  memory_ontology_document_id: string;
+  policy_profile_document_id: string;
+  environment: string;
+  scope: string;
+  tenant_id?: string | null;
+  release_notes: string;
+};
+
+type RollbackRequest = {
+  snapshot_id: string;
+};
+
+type ImportPayload = {
+  kind: string;
+  format: "yaml" | "json";
+  yaml?: string;
+  json?: Record<string, unknown>;
+  definition_yaml?: string;
+  definition_json?: Record<string, unknown>;
 };
 
 function toBackendKind(kind: ConfigKind): string {
@@ -148,6 +233,27 @@ function deriveSummary(name: string, yaml: string): string {
     .filter(Boolean)
     .filter((line) => !line.startsWith("document_name:") && !line.startsWith("profile_name:"));
   return lines[0] ?? `${name} configuration document`;
+}
+
+function safeJsonParse(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Keep the raw JSON string if parsing fails.
+  }
+  return null;
+}
+
+function buildSearchParams(filters: Record<string, string | number | boolean | null | undefined>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null || value === "") continue;
+    search.set(key, String(value));
+  }
+  return search;
 }
 
 function toSession(data: any): Session {
@@ -168,6 +274,13 @@ class ApiError extends Error {
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+class BackendUnavailableError extends ApiError {
+  constructor(message: string) {
+    super(message, 503);
+    this.name = "BackendUnavailableError";
   }
 }
 
@@ -232,11 +345,7 @@ async function buildApiError(response: Response): Promise<ApiError> {
   return new ApiError(message, response.status);
 }
 
-function shouldUseMockFallback(error: unknown) {
-  return error instanceof TypeError;
-}
-
-function toConfigDocument(data: BackendConfig): ConfigDocument {
+function toConfigDocument(data: BackendConfig, previousYaml?: string): ConfigDocument {
   return {
     id: data.id,
     kind: toFrontendKind(data.kind),
@@ -245,13 +354,49 @@ function toConfigDocument(data: BackendConfig): ConfigDocument {
     status: data.status as ConfigDocument["status"],
     tenant: data.tenant_id ?? "all",
     scope: data.scope,
-    environment: "dev",
+    environment: data.environment ?? "dev",
+    baseVersion: data.base_version ?? null,
+    createdAt: data.created_at ?? data.updated_at,
+    approvedAt: data.approved_at ?? null,
+    publishedAt: data.published_at ?? null,
     updatedAt: data.updated_at,
-    lastPublishedAt: data.published_by ? data.updated_at : undefined,
-    summary: deriveSummary(data.name, data.definition_yaml),
+    lastPublishedAt: data.published_at ?? undefined,
+    summary: data.summary ?? deriveSummary(data.name, data.definition_yaml),
     yaml: data.definition_yaml,
-    previousYaml: undefined,
+    definitionJson: data.definition_json,
+    releaseNotes: data.release_notes ?? undefined,
+    snapshotId: data.snapshot_id ?? null,
+    snapshotHash: data.snapshot_hash ?? null,
+    sourcePrecedenceKey: data.source_precedence_key ?? null,
+    sourcePrecedenceScore: data.source_precedence_score ?? null,
+    previousYaml,
   };
+}
+
+function toConfigDocuments(records: BackendConfig[]): ConfigDocument[] {
+  const mapped = records.map((record) => toConfigDocument(record));
+  const grouped = new Map<string, ConfigDocument[]>();
+
+  for (const document of mapped) {
+    const key = [document.kind, document.scope, document.tenant].join("::");
+    const current = grouped.get(key) ?? [];
+    current.push(document);
+    grouped.set(key, current);
+  }
+
+  for (const documents of grouped.values()) {
+    documents.sort((left, right) => left.version - right.version);
+    for (let index = 0; index < documents.length; index += 1) {
+      documents[index].previousYaml = index > 0 ? documents[index - 1].yaml : undefined;
+    }
+  }
+
+  return mapped.sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind.localeCompare(right.kind);
+    if (left.scope !== right.scope) return left.scope.localeCompare(right.scope);
+    if (left.tenant !== right.tenant) return left.tenant.localeCompare(right.tenant);
+    return right.version - left.version;
+  });
 }
 
 function validationChecksFromIssues(issues: BackendValidationIssue[]) {
@@ -317,7 +462,7 @@ function parseSampleEvent(sampleEvent: string) {
         ? { address: "123 Seongsu-ro, Seongdong-gu, Seoul" }
         : action === "search.webSearch"
           ? { query: "one off search" }
-          : { document_title: "Real Estate Tax Guide" },
+        : { document_title: "Real Estate Tax Guide" },
   };
 }
 
@@ -329,10 +474,15 @@ function toSimulationRun(result: BackendSimulationResponse, configId: string, sa
     timestamp: new Date().toISOString(),
     beforeDecision: String(result.old_decision?.action ?? "n/a"),
     afterDecision: String(result.new_decision?.action ?? "n/a"),
+    activeSnapshotId: result.active_snapshot_id ?? null,
+    candidateSnapshotId: result.candidate_snapshot_id ?? null,
     reasonCodes:
       result.changed_reason_codes.length > 0
         ? result.changed_reason_codes
         : ((result.new_decision?.reason_codes as string[] | undefined) ?? []),
+    changedMemoryCandidates: result.changed_memory_candidates,
+    expectedWriteDelta: result.expected_write_delta,
+    expectedBlockDelta: result.expected_block_delta,
     diff: JSON.stringify(
       {
         before: result.old_decision,
@@ -347,17 +497,53 @@ function toSimulationRun(result: BackendSimulationResponse, configId: string, sa
   };
 }
 
-function toPublicationSnapshot(data: BackendPublication, documentId: string, documentName: string): PublicationSnapshot {
+function normalizeArrayResponse<T>(value: unknown): T[] {
+  if (Array.isArray(value)) {
+    return value as T[];
+  }
+  if (value && typeof value === "object") {
+    const maybeItems = (value as { items?: unknown }).items;
+    if (Array.isArray(maybeItems)) {
+      return maybeItems as T[];
+    }
+  }
+  return [];
+}
+
+function toPublicationSnapshot(data: BackendPublication): PublicationSnapshot {
   return {
     id: data.id,
-    documentId,
-    documentName,
-    version: 0,
-    status: data.rollback_of ? "rolled-back" : data.is_active ? "active" : "archived",
-    createdAt: data.published_at,
-    createdBy: data.published_by,
     configSnapshotId: data.id,
-    note: data.snapshot_hash,
+    snapshotHash: data.snapshot_hash,
+    scope: data.scope,
+    tenant: data.tenant_id ?? null,
+    environment: data.environment,
+    status: data.rollback_of ? "rolled-back" : data.is_active ? "active" : "archived",
+    publishedAt: data.published_at,
+    publishedBy: data.published_by,
+    rollbackOf: data.rollback_of ?? null,
+    releaseNotes: data.release_notes ?? "",
+    apiOntology: {
+      id: data.api_ontology_document_id,
+      name: data.api_ontology_document_name ?? "API Ontology",
+      version: data.api_ontology_document_version ?? 0,
+      kind: "api-ontology",
+      status: data.is_active ? "published" : "archived",
+    },
+    memoryOntology: {
+      id: data.memory_ontology_document_id,
+      name: data.memory_ontology_document_name ?? "Memory Ontology",
+      version: data.memory_ontology_document_version ?? 0,
+      kind: "memory-ontology",
+      status: data.is_active ? "published" : "archived",
+    },
+    policyProfile: {
+      id: data.policy_profile_document_id,
+      name: data.policy_profile_document_name ?? "Policy Profile",
+      version: data.policy_profile_document_version ?? 0,
+      kind: "policy-profile",
+      status: data.is_active ? "published" : "archived",
+    },
   };
 }
 
@@ -367,12 +553,17 @@ function toDecisionRecord(data: BackendDecision): DecisionRecord {
     title: data.title,
     action: data.action,
     status: data.status as DecisionRecord["status"],
+    kind: data.kind,
     scope: data.scope,
     tenant: data.tenant,
     environment: data.environment,
     reasonCode: data.reason_code,
+    reasonCodes: data.reason_codes,
     configSnapshotId: data.config_snapshot_id,
     evidence: data.evidence,
+    evidenceCount: data.evidence_count,
+    documentVersion: data.document_version,
+    documentKind: data.document_kind,
     timestamp: data.timestamp,
   };
 }
@@ -387,12 +578,19 @@ function toMemoryRecord(data: BackendMemory): MemoryRecord {
       (typeof data.payload.summary === "string" && data.payload.summary) ||
       (typeof data.payload.topic === "string" && data.payload.topic) ||
       JSON.stringify(data.payload),
-    scope: "runtime",
-    tenant: "runtime",
+    scope: data.scope ?? "runtime",
+    tenant: data.tenant_id ?? "runtime",
+    environment: data.environment ?? undefined,
     status:
       data.state === "active" ? "active" : data.state === "deleted" ? "deleted" : ("blocked" as MemoryRecord["status"]),
     evidence: `${data.evidence_count} evidence record(s)`,
+    evidenceCount: data.evidence_count,
     configSnapshotId: data.config_snapshot_id,
+    sourcePrecedenceKey: data.source_precedence_key,
+    sourcePrecedenceScore: data.source_precedence_score,
+    canonicalKey: data.canonical_key,
+    reasonCodes: data.reason_codes,
+    payload: data.payload,
     timestamp: new Date().toISOString(),
   };
 }
@@ -404,71 +602,86 @@ function toAuditRecord(data: BackendAudit): AuditRecord {
     role: data.role,
     documentKind: data.document_kind,
     documentVersion: data.document_version,
+    documentName: data.document_name,
     action: data.action,
+    scope: data.scope,
+    tenant: data.tenant,
+    environment: data.environment,
+    snapshotId: data.snapshot_id,
+    beforeChecksum: data.before_checksum,
+    afterChecksum: data.after_checksum,
+    releaseNotes: data.release_notes ?? undefined,
+    approvedAt: data.approved_at ?? null,
+    publishedAt: data.published_at ?? null,
     timestamp: data.timestamp,
     diffRef: JSON.stringify(data.diff_ref),
   };
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  if (API_BASE_URL) {
-    try {
-      const response = await fetch(`${API_BASE_URL}${path}`, {
-        headers: buildHeaders(options),
-        ...options,
-      });
+  if (!API_BASE_URL) {
+    throw new BackendUnavailableError(`Backend unavailable: NEXT_PUBLIC_MEMORYENGINE_API_BASE_URL is not configured for ${path}.`);
+  }
 
-      if (!response.ok) {
-        const error = await buildApiError(response);
-        if (error instanceof UnauthorizedError) {
-          writeStoredSession(null);
-        }
-        throw error;
-      }
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: buildHeaders(options),
+      ...options,
+    });
 
-      return (await response.json()) as T;
-    } catch (error) {
-      if (options.mockFallback && shouldUseMockFallback(error)) {
-        return (await options.mockFallback()) as T;
+    if (!response.ok) {
+      const error = await buildApiError(response);
+      if (error instanceof UnauthorizedError) {
+        writeStoredSession(null);
       }
       throw error;
     }
-  }
 
-  if (!options.mockFallback) {
-    throw new Error(`No backend available for ${path}`);
-  }
+    if (response.status === 204) {
+      return undefined as T;
+    }
 
-  return (await options.mockFallback()) as T;
+    const text = await response.text();
+    if (!text) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw new BackendUnavailableError(
+      `Backend unavailable at ${API_BASE_URL}: ${error instanceof Error ? error.message : "request failed"}`,
+    );
+  }
 }
 
 async function requestText(path: string, options: RequestOptions = {}): Promise<string> {
-  if (API_BASE_URL) {
-    try {
-      const response = await fetch(`${API_BASE_URL}${path}`, {
-        headers: buildHeaders(options),
-        ...options,
-      });
-      if (!response.ok) {
-        const error = await buildApiError(response);
-        if (error instanceof UnauthorizedError) {
-          writeStoredSession(null);
-        }
-        throw error;
-      }
-      return await response.text();
-    } catch (error) {
-      if (options.mockFallback && shouldUseMockFallback(error)) {
-        return (await options.mockFallback()) as string;
+  if (!API_BASE_URL) {
+    throw new BackendUnavailableError(`Backend unavailable: NEXT_PUBLIC_MEMORYENGINE_API_BASE_URL is not configured for ${path}.`);
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: buildHeaders(options),
+      ...options,
+    });
+    if (!response.ok) {
+      const error = await buildApiError(response);
+      if (error instanceof UnauthorizedError) {
+        writeStoredSession(null);
       }
       throw error;
     }
+    return await response.text();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw new BackendUnavailableError(
+      `Backend unavailable at ${API_BASE_URL}: ${error instanceof Error ? error.message : "request failed"}`,
+    );
   }
-
-  if (!options.mockFallback) {
-    throw new Error(`No backend available for ${path}`);
-  }
-  return (await options.mockFallback()) as string;
 }
 
 export const client = {
@@ -478,7 +691,6 @@ export const client = {
         method: "POST",
         body: JSON.stringify({ email, password }),
         skipAuth: true,
-        mockFallback: () => mockLogin(email, password),
       });
       const session = toSession(response);
       writeStoredSession(session);
@@ -489,7 +701,6 @@ export const client = {
       try {
         const response = await request<any>("/v1/auth/me", {
           method: "GET",
-          mockFallback: () => mockMe(),
         });
         if (!response) {
           writeStoredSession(null);
@@ -510,7 +721,6 @@ export const client = {
       try {
         await request<void>("/v1/auth/logout", {
           method: "POST",
-          mockFallback: () => mockLogout(),
         });
       } finally {
         writeStoredSession(null);
@@ -518,37 +728,61 @@ export const client = {
     },
   },
   configs: {
-    async list(kind?: ConfigKind) {
-      const suffix = kind ? `?kind=${toBackendKind(kind)}` : "";
-      const response = await request<BackendConfig[]>(`/v1/control/configs${suffix}`, {
-        method: "GET",
-        mockFallback: () => mockListConfigs(kind),
+    async list(filters: ConfigListFilters & { kind?: ConfigKind } = {}) {
+      const search = buildSearchParams({
+        kind: filters.kind ? toBackendKind(filters.kind) : undefined,
+        scope: filters.scope,
+        environment: filters.environment,
+        tenant: filters.tenant,
+        status: filters.status,
       });
-      return response.map(toConfigDocument);
+      const response = await request<unknown>(`/v1/control/configs${search.toString() ? `?${search.toString()}` : ""}`, {
+        method: "GET",
+      });
+      return toConfigDocuments(normalizeArrayResponse<BackendConfig>(response));
     },
     async save(config: ConfigDocument) {
+      const body = {
+        name: config.name,
+        scope: config.scope,
+        tenant_id: config.tenant === "all" ? null : config.tenant,
+        environment: config.environment,
+        status: config.status,
+        summary: config.summary,
+        definition_yaml: config.yaml,
+        definition_json: config.definitionJson ?? safeJsonParse(config.yaml) ?? {},
+        version: config.version,
+        base_version: config.baseVersion ?? null,
+        release_notes: config.releaseNotes ?? "",
+      };
       if (config.id) {
         const response = await request<BackendConfig>(`/v1/control/configs/${config.id}`, {
           method: "PUT",
-          body: JSON.stringify({
-            scope: config.scope,
-            tenant_id: config.tenant === "all" ? null : config.tenant,
-            definition_yaml: config.yaml,
-          }),
-          mockFallback: () => mockSaveConfig(config),
+          body: JSON.stringify(body),
         });
-        return toConfigDocument(response);
+        return toConfigDocument(response, config.previousYaml);
       }
       const response = await request<BackendConfig>("/v1/control/configs", {
         method: "POST",
         body: JSON.stringify({
           kind: toBackendKind(config.kind),
-          name: config.name,
-          scope: config.scope,
-          tenant_id: config.tenant === "all" ? null : config.tenant,
-          yaml: config.yaml,
+          ...body,
         }),
-        mockFallback: () => mockSaveConfig(config),
+      });
+      return toConfigDocument(response);
+    },
+    async approve(configId: string) {
+      const response = await request<{ id: string; status: string; approved_by?: string; approved_at?: string }>(
+        `/v1/control/configs/${configId}/approve`,
+        {
+          method: "POST",
+        },
+      );
+      return response;
+    },
+    async archive(configId: string) {
+      const response = await request<BackendConfig>(`/v1/control/configs/${configId}/archive`, {
+        method: "POST",
       });
       return toConfigDocument(response);
     },
@@ -556,7 +790,6 @@ export const client = {
       const response = await request<BackendValidationResponse>("/v1/control/validate", {
         method: "POST",
         body: JSON.stringify({ config_id: configId }),
-        mockFallback: () => mockValidateConfig(configId),
       });
       return toValidationRun(response, configId);
     },
@@ -564,107 +797,147 @@ export const client = {
       const response = await request<BackendSimulationResponse>("/v1/control/simulate", {
         method: "POST",
         body: JSON.stringify({ config_id: configId, sample_event: parseSampleEvent(sampleEvent) }),
-        mockFallback: () => mockSimulateConfig(configId, sampleEvent),
       });
       return toSimulationRun(response, configId, sampleEvent);
     },
-    async publish(configId: string) {
+    async publish(requestPayload: PublishRequest) {
       const response = await request<BackendPublication>("/v1/control/publish", {
         method: "POST",
-        body: JSON.stringify({ config_id: configId }),
-        mockFallback: () => mockPublishConfig(configId),
+        body: JSON.stringify(requestPayload),
       });
-      return toPublicationSnapshot(response, configId, configId);
+      return toPublicationSnapshot(response);
     },
     async rollback(snapshotId: string) {
       const response = await request<BackendPublication>("/v1/control/rollback", {
         method: "POST",
-        body: JSON.stringify({ snapshot_id: snapshotId }),
-        mockFallback: () => mockRollbackPublication(snapshotId),
+        body: JSON.stringify({ snapshot_id: snapshotId } satisfies RollbackRequest),
       });
-      return toPublicationSnapshot(response, response.api_ontology_document_id, "Rolled back snapshot");
+      return toPublicationSnapshot(response);
     },
-    async importYaml(kind: ConfigKind, yaml: string) {
+    async importDocument(kind: ConfigKind, source: string, format: "yaml" | "json") {
+      const payload: ImportPayload =
+        format === "json"
+          ? {
+              kind: toBackendKind(kind),
+              format,
+              yaml: source,
+              json: safeJsonParse(source) ?? undefined,
+              definition_yaml: source,
+              definition_json: safeJsonParse(source) ?? undefined,
+            }
+          : {
+              kind: toBackendKind(kind),
+              format,
+              yaml: source,
+              definition_yaml: source,
+              definition_json: safeJsonParse(source) ?? undefined,
+            };
       const response = await request<BackendConfig>("/v1/control/import", {
         method: "POST",
-        body: JSON.stringify({ kind: toBackendKind(kind), yaml }),
-        mockFallback: () => mockImportConfig(kind, yaml),
+        body: JSON.stringify(payload),
       });
       return toConfigDocument(response);
     },
-    exportYaml(configId: string) {
-      return requestText(`/v1/control/configs/${configId}/export`, {
+    exportDocument(configId: string, format: "yaml" | "json" = "yaml") {
+      return requestText(`/v1/control/configs/${configId}/export?${buildSearchParams({ format }).toString()}`, {
         method: "GET",
-        mockFallback: () => mockExportConfig(configId),
       });
     },
   },
   validations: {
     async list() {
-      const response = await request<BackendValidationIssue[]>("/v1/control/validation", {
+      const response = await request<unknown>("/v1/control/validation", {
         method: "GET",
-        mockFallback: () => mockListValidations(),
       });
-      return groupValidationRuns(response);
+      return groupValidationRuns(normalizeArrayResponse<BackendValidationIssue>(response));
     },
   },
   simulations: {
     async list() {
-      const response = await request<BackendSimulationResponse[]>("/v1/control/simulation", {
+      const response = await request<unknown>("/v1/control/simulation", {
         method: "GET",
-        mockFallback: () => mockListSimulations(),
       });
-      return response.map((item, index) => toSimulationRun(item, `config-${index}`, "action: docs.openDocument"));
+      return normalizeArrayResponse<BackendSimulationResponse>(response).map((item, index) =>
+        toSimulationRun(item, `config-${index}`, "action: docs.openDocument"),
+      );
     },
   },
   publications: {
-    async list() {
-      const response = await request<BackendPublication[]>("/v1/control/publications", {
-        method: "GET",
-        mockFallback: () => mockListPublications(),
+    async list(filters: PublicationFilters = {}) {
+      const search = buildSearchParams({
+        scope: filters.scope,
+        environment: filters.environment,
+        tenant: filters.tenant,
+        status: filters.status,
+        kind: filters.kind,
       });
-      return response.map((item) => toPublicationSnapshot(item, item.api_ontology_document_id, "Config snapshot"));
+      const response = await request<unknown>(`/v1/control/publications${search.toString() ? `?${search.toString()}` : ""}`, {
+        method: "GET",
+      });
+      return normalizeArrayResponse<BackendPublication>(response).map((item) => toPublicationSnapshot(item));
     },
   },
   decisions: {
-    async list(filters?: {
-      scope?: string;
-      tenant?: string;
-      environment?: string;
-      status?: string;
-      query?: string;
-    }) {
-      const search = new URLSearchParams();
-      if (filters?.tenant) search.set("tenant", filters.tenant);
-      const response = await request<BackendDecision[]>(`/v1/memory/decisions?${search.toString()}`, {
-        method: "GET",
-        mockFallback: () => mockListDecisions(filters),
+    async list(filters: DecisionFilters = {}) {
+      const search = buildSearchParams({
+        scope: filters.scope,
+        tenant: filters.tenant,
+        environment: filters.environment,
+        status: filters.status,
+        kind: filters.kind,
+        query: filters.query,
       });
-      return response.map(toDecisionRecord);
+      const response = await request<unknown>(`/v1/memory/decisions${search.toString() ? `?${search.toString()}` : ""}`, {
+        method: "GET",
+      });
+      return normalizeArrayResponse<BackendDecision>(response).map(toDecisionRecord);
     },
   },
   memories: {
-    async list(filters?: { type?: string; status?: string; query?: string }) {
-      const response = await request<BackendMemory[]>("/v1/memory/query", {
+    async list(filters: MemoryFilters = {}) {
+      const currentSession = readStoredSession();
+      const response = await request<unknown>("/v1/memory/query", {
         method: "POST",
         body: JSON.stringify({
-          tenant_id: "tenant_ui",
-          user_id: "user_ui",
-          memory_type: filters?.type,
-          query_text: filters?.query,
+          tenant_id: filters.tenant ?? "",
+          user_id: filters.user ?? currentSession?.user.email ?? "",
+          memory_type: filters.type,
+          query_text: filters.query,
+          scope: filters.scope,
+          environment: filters.environment,
+          status: filters.status,
         }),
-        mockFallback: () => mockListMemories(filters),
       });
-      return response.map(toMemoryRecord);
+      const records = normalizeArrayResponse<BackendMemory>(response).map(toMemoryRecord);
+      return records.filter((record) => {
+        if (filters.type && record.type !== filters.type) return false;
+        if (filters.status && record.status !== filters.status) return false;
+        if (filters.scope && record.scope !== filters.scope) return false;
+        if (filters.environment && record.environment && record.environment !== filters.environment) return false;
+        if (filters.tenant && record.tenant !== filters.tenant) return false;
+        if (filters.query) {
+          const haystack = [record.title, record.summary, record.evidence, record.configSnapshotId].join(" ").toLowerCase();
+          if (!haystack.includes(filters.query.toLowerCase())) return false;
+        }
+        return true;
+      });
     },
   },
   audit: {
-    async list() {
-      const response = await request<BackendAudit[]>("/v1/audit/logs", {
-        method: "GET",
-        mockFallback: () => mockListAuditLogs(),
+    async list(filters: AuditFilters = {}) {
+      const search = buildSearchParams({
+        scope: filters.scope,
+        environment: filters.environment,
+        tenant: filters.tenant,
+        status: filters.status,
+        kind: filters.kind,
+        action: filters.action,
+        query: filters.query,
       });
-      return response.map(toAuditRecord);
+      const response = await request<unknown>(`/v1/audit/logs${search.toString() ? `?${search.toString()}` : ""}`, {
+        method: "GET",
+      });
+      return normalizeArrayResponse<BackendAudit>(response).map(toAuditRecord);
     },
   },
 };

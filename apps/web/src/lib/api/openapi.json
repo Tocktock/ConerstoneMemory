@@ -147,6 +147,54 @@
               ],
               "title": "Kind"
             }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
           }
         ],
         "responses": {
@@ -330,8 +378,8 @@
         "tags": [
           "control"
         ],
-        "summary": "Export Yaml",
-        "operationId": "export_yaml_v1_control_configs__document_id__export_get",
+        "summary": "Export Document",
+        "operationId": "export_document_v1_control_configs__document_id__export_get",
         "security": [
           {
             "HTTPBearer": []
@@ -345,6 +393,16 @@
             "schema": {
               "type": "string",
               "title": "Document Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "yaml",
+              "title": "Format"
             }
           }
         ],
@@ -375,8 +433,8 @@
         "tags": [
           "control"
         ],
-        "summary": "Import Yaml",
-        "operationId": "import_yaml_v1_control_import_post",
+        "summary": "Import Config",
+        "operationId": "import_config_v1_control_import_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -425,27 +483,87 @@
         ],
         "summary": "List Api Ontology",
         "operationId": "list_api_ontology_v1_control_api_ontology_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/ConfigDocumentResponse"
                   },
-                  "type": "array",
                   "title": "Response List Api Ontology V1 Control Api Ontology Get"
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -453,15 +571,20 @@
         ],
         "summary": "Create Api Ontology",
         "operationId": "create_api_ontology_v1_control_api_ontology_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ConfigDocumentUpsertRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -484,12 +607,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/v1/control/memory-ontology": {
@@ -499,27 +617,87 @@
         ],
         "summary": "List Memory Ontology",
         "operationId": "list_memory_ontology_v1_control_memory_ontology_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/ConfigDocumentResponse"
                   },
-                  "type": "array",
                   "title": "Response List Memory Ontology V1 Control Memory Ontology Get"
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -527,15 +705,20 @@
         ],
         "summary": "Create Memory Ontology",
         "operationId": "create_memory_ontology_v1_control_memory_ontology_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ConfigDocumentUpsertRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -558,12 +741,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/v1/control/policy-profiles": {
@@ -573,27 +751,87 @@
         ],
         "summary": "List Policy Profiles",
         "operationId": "list_policy_profiles_v1_control_policy_profiles_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/ConfigDocumentResponse"
                   },
-                  "type": "array",
                   "title": "Response List Policy Profiles V1 Control Policy Profiles Get"
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -601,15 +839,20 @@
         ],
         "summary": "Create Policy Profile",
         "operationId": "create_policy_profile_v1_control_policy_profiles_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ConfigDocumentUpsertRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -632,12 +875,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/v1/control/policy-profiles/{document_id}/approve": {
@@ -811,6 +1049,194 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApproveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/control/policy-profiles/{document_id}/archive": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Archive",
+        "operationId": "archive_v1_control_policy_profiles__document_id__archive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/control/memory-ontology/{document_id}/archive": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Archive",
+        "operationId": "archive_v1_control_memory_ontology__document_id__archive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/control/api-ontology/{document_id}/archive": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Archive",
+        "operationId": "archive_v1_control_api_ontology__document_id__archive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/control/configs/{document_id}/archive": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Archive",
+        "operationId": "archive_v1_control_configs__document_id__archive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveResponse"
                 }
               }
             }
@@ -1112,27 +1538,103 @@
         ],
         "summary": "Publications",
         "operationId": "publications_v1_control_publications_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Environment"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "is_active",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/PublicationResponse"
                   },
-                  "type": "array",
                   "title": "Response Publications V1 Control Publications Get"
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/v1/control/publish": {
@@ -1252,18 +1754,144 @@
         ],
         "summary": "Audit Log",
         "operationId": "audit_log_v1_control_audit_log_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "name": "target_kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Kind"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
                   "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
                   "title": "Response Audit Log V1 Control Audit Log Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/control/jobs": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Enqueue Admin Job",
+        "operationId": "enqueue_admin_job_v1_control_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Enqueue Admin Job V1 Control Jobs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1697,20 +2325,57 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "draft",
+              "validated",
+              "approved",
+              "published",
+              "archived"
+            ],
             "title": "Status"
           },
           "approved_by": {
             "type": "string",
             "title": "Approved By"
+          },
+          "approved_at": {
+            "type": "string",
+            "title": "Approved At"
           }
         },
         "type": "object",
         "required": [
           "id",
           "status",
-          "approved_by"
+          "approved_by",
+          "approved_at"
         ],
         "title": "ApproveResponse"
+      },
+      "ArchiveResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "validated",
+              "approved",
+              "published",
+              "archived"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "ArchiveResponse"
       },
       "ConfigDocumentResponse": {
         "properties": {
@@ -1737,10 +2402,23 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "draft",
+              "validated",
+              "approved",
+              "published",
+              "archived"
+            ],
             "title": "Status"
           },
           "scope": {
             "type": "string",
+            "enum": [
+              "global",
+              "environment",
+              "tenant",
+              "emergency_override"
+            ],
             "title": "Scope"
           },
           "tenant_id": {
@@ -1753,6 +2431,17 @@
               }
             ],
             "title": "Tenant Id"
+          },
+          "base_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Version"
           },
           "checksum": {
             "type": "string",
@@ -1771,6 +2460,10 @@
             "type": "string",
             "title": "Created By"
           },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
           "updated_at": {
             "type": "string",
             "title": "Updated At"
@@ -1786,6 +2479,17 @@
             ],
             "title": "Approved By"
           },
+          "approved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
           "published_by": {
             "anyOf": [
               {
@@ -1796,6 +2500,17 @@
               }
             ],
             "title": "Published By"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
           }
         },
         "type": "object",
@@ -1807,10 +2522,12 @@
           "status",
           "scope",
           "tenant_id",
+          "base_version",
           "checksum",
           "definition_json",
           "definition_yaml",
           "created_by",
+          "created_at",
           "updated_at"
         ],
         "title": "ConfigDocumentResponse"
@@ -2041,7 +2758,7 @@
         "properties": {
           "email": {
             "type": "string",
-            "format": "email",
+            "minLength": 3,
             "title": "Email"
           },
           "password": {
@@ -2113,6 +2830,12 @@
           },
           "scope": {
             "type": "string",
+            "enum": [
+              "global",
+              "environment",
+              "tenant",
+              "emergency_override"
+            ],
             "title": "Scope"
           },
           "tenant_id": {
@@ -2133,6 +2856,10 @@
           "is_active": {
             "type": "boolean",
             "title": "Is Active"
+          },
+          "release_notes": {
+            "type": "string",
+            "title": "Release Notes"
           },
           "published_by": {
             "type": "string",
@@ -2165,6 +2892,30 @@
           "policy_profile_document_id": {
             "type": "string",
             "title": "Policy Profile Document Id"
+          },
+          "api_ontology_document_name": {
+            "type": "string",
+            "title": "Api Ontology Document Name"
+          },
+          "memory_ontology_document_name": {
+            "type": "string",
+            "title": "Memory Ontology Document Name"
+          },
+          "policy_profile_document_name": {
+            "type": "string",
+            "title": "Policy Profile Document Name"
+          },
+          "api_ontology_document_version": {
+            "type": "integer",
+            "title": "Api Ontology Document Version"
+          },
+          "memory_ontology_document_version": {
+            "type": "integer",
+            "title": "Memory Ontology Document Version"
+          },
+          "policy_profile_document_version": {
+            "type": "integer",
+            "title": "Policy Profile Document Version"
           }
         },
         "type": "object",
@@ -2175,11 +2926,18 @@
           "tenant_id",
           "snapshot_hash",
           "is_active",
+          "release_notes",
           "published_by",
           "published_at",
           "api_ontology_document_id",
           "memory_ontology_document_id",
-          "policy_profile_document_id"
+          "policy_profile_document_id",
+          "api_ontology_document_name",
+          "memory_ontology_document_name",
+          "policy_profile_document_name",
+          "api_ontology_document_version",
+          "memory_ontology_document_version",
+          "policy_profile_document_version"
         ],
         "title": "PublicationResponse"
       },
@@ -2299,7 +3057,6 @@
         "properties": {
           "email": {
             "type": "string",
-            "format": "email",
             "title": "Email"
           },
           "display_name": {

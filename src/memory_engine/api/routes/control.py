@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from memory_engine.auth.security import AuthUser, get_current_user, require_roles
 from memory_engine.control.schemas import (
     ApproveResponse,
+    ArchiveResponse,
     ConfigDocumentResponse,
     ConfigDocumentUpsertRequest,
     PublishRequest,
@@ -19,8 +21,10 @@ from memory_engine.control.schemas import (
     ValidationIssue,
     ValidationResponse,
 )
+from memory_engine.db.models import Job
 from memory_engine.control.service import (
     approve_document,
+    archive_document,
     get_document_or_404,
     list_audit_logs,
     list_documents,
@@ -35,11 +39,18 @@ from memory_engine.control.service import (
     to_yaml,
     validate_documents,
 )
+from memory_engine.id_utils import new_id
 from memory_engine.runtime.policy import evaluate_event
 from memory_engine.runtime.schemas import EventIngestRequest
 from memory_engine.db.session import get_session
 
 router = APIRouter(prefix="/v1/control", tags=["control"])
+SUPPORTED_ADMIN_JOB_TYPES = {
+    "replay_snapshot",
+    "recompute_conflicts",
+    "ttl_cleanup",
+    "embedding_backfill",
+}
 
 
 def _save_document(
@@ -59,10 +70,13 @@ def _save_document(
 @router.get("/configs", response_model=list[ConfigDocumentResponse])
 def list_generic_configs(
     kind: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
+    tenant_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> list[ConfigDocumentResponse]:
-    return list_documents(session, kind)
+    return list_documents(session, kind, scope=scope, tenant_id=tenant_id, status=status)
 
 
 @router.post("/configs", response_model=ConfigDocumentResponse)
@@ -78,8 +92,10 @@ def create_generic_config(
         name=payload.get("name"),
         scope=payload.get("scope", "global"),
         tenant_id=payload.get("tenant_id") or payload.get("tenant"),
-        definition_yaml=payload.get("yaml"),
-        definition_json=payload.get("definition_json"),
+        version=payload.get("version"),
+        base_version=payload.get("base_version"),
+        definition_yaml=payload.get("definition_yaml") or payload.get("yaml"),
+        definition_json=payload.get("definition_json") or payload.get("json"),
     )
     return _save_document(kind=kind, payload=request, session=session, actor=actor)
 
@@ -105,39 +121,58 @@ def update_config(
 
 
 @router.get("/configs/{document_id}/export")
-def export_yaml(
+def export_document(
     document_id: str,
+    format: str = Query(default="yaml"),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> Response:
     document = get_document_or_404(session, document_id)
-    return Response(content=to_yaml(document.definition_jsonb), media_type="application/yaml")
+    if format == "yaml":
+        return Response(content=to_yaml(document.definition_jsonb), media_type="application/yaml")
+    if format == "json":
+        return Response(content=json.dumps(document.definition_jsonb, indent=2), media_type="application/json")
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="format must be yaml or json")
 
 
 @router.post("/import", response_model=ConfigDocumentResponse)
-def import_yaml(
+def import_config(
     payload: dict[str, Any],
     session: Session = Depends(get_session),
     actor: AuthUser = Depends(require_roles("editor", "approver", "operator", "admin")),
 ) -> ConfigDocumentResponse:
     request = ConfigDocumentUpsertRequest(
+        name=payload.get("name"),
         scope=payload.get("scope", "global"),
         tenant_id=payload.get("tenant_id"),
-        definition_yaml=payload["yaml"],
+        version=payload.get("version"),
+        base_version=payload.get("base_version"),
+        definition_yaml=payload.get("definition_yaml") or payload.get("yaml"),
+        definition_json=payload.get("definition_json") or payload.get("json"),
     )
     return _save_document(kind=payload["kind"], payload=request, session=session, actor=actor)
 
 
-def _list_documents_by_kind(kind: str, session: Session) -> list[ConfigDocumentResponse]:
-    return list_documents(session, kind)
+def _list_documents_by_kind(
+    kind: str,
+    session: Session,
+    *,
+    scope: str | None = None,
+    tenant_id: str | None = None,
+    status: str | None = None,
+) -> list[ConfigDocumentResponse]:
+    return list_documents(session, kind, scope=scope, tenant_id=tenant_id, status=status)
 
 
 @router.get("/api-ontology", response_model=list[ConfigDocumentResponse])
 def list_api_ontology(
+    scope: str | None = Query(default=None),
+    tenant_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> list[ConfigDocumentResponse]:
-    return _list_documents_by_kind("api_ontology", session)
+    return _list_documents_by_kind("api_ontology", session, scope=scope, tenant_id=tenant_id, status=status)
 
 
 @router.post("/api-ontology", response_model=ConfigDocumentResponse)
@@ -151,10 +186,13 @@ def create_api_ontology(
 
 @router.get("/memory-ontology", response_model=list[ConfigDocumentResponse])
 def list_memory_ontology(
+    scope: str | None = Query(default=None),
+    tenant_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> list[ConfigDocumentResponse]:
-    return _list_documents_by_kind("memory_ontology", session)
+    return _list_documents_by_kind("memory_ontology", session, scope=scope, tenant_id=tenant_id, status=status)
 
 
 @router.post("/memory-ontology", response_model=ConfigDocumentResponse)
@@ -168,10 +206,13 @@ def create_memory_ontology(
 
 @router.get("/policy-profiles", response_model=list[ConfigDocumentResponse])
 def list_policy_profiles(
+    scope: str | None = Query(default=None),
+    tenant_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> list[ConfigDocumentResponse]:
-    return _list_documents_by_kind("policy_profile", session)
+    return _list_documents_by_kind("policy_profile", session, scope=scope, tenant_id=tenant_id, status=status)
 
 
 @router.post("/policy-profiles", response_model=ConfigDocumentResponse)
@@ -196,7 +237,28 @@ def approve(
         document = approve_document(session, document_id, actor)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return ApproveResponse(id=document.id, status=document.status, approved_by=actor.email)
+    return ApproveResponse(
+        id=document.id,
+        status=document.status,
+        approved_by=actor.email,
+        approved_at=document.approved_at.isoformat() if document.approved_at else "",
+    )
+
+
+@router.post("/configs/{document_id}/archive", response_model=ArchiveResponse)
+@router.post("/api-ontology/{document_id}/archive", response_model=ArchiveResponse)
+@router.post("/memory-ontology/{document_id}/archive", response_model=ArchiveResponse)
+@router.post("/policy-profiles/{document_id}/archive", response_model=ArchiveResponse)
+def archive(
+    document_id: str,
+    session: Session = Depends(get_session),
+    actor: AuthUser = Depends(require_roles("operator", "admin")),
+) -> ArchiveResponse:
+    try:
+        document = archive_document(session, document_id, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return ArchiveResponse(id=document.id, status=document.status)
 
 
 @router.get("/validation", response_model=list[ValidationIssue])
@@ -248,10 +310,20 @@ def simulate_config(
 
 @router.get("/publications", response_model=list[PublicationResponse])
 def publications(
+    environment: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
+    tenant_id: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> list[PublicationResponse]:
-    return list_publications(session)
+    return list_publications(
+        session,
+        environment=environment,
+        scope=scope,
+        tenant_id=tenant_id,
+        is_active=is_active,
+    )
 
 
 @router.post("/publish", response_model=PublicationResponse)
@@ -282,7 +354,46 @@ def rollback(
 
 @router.get("/audit-log")
 def audit_log(
+    action: str | None = Query(default=None),
+    target_kind: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
+    tenant_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
     _user: AuthUser = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    return list_audit_logs(session)
+    return list_audit_logs(
+        session,
+        action=action,
+        target_kind=target_kind,
+        scope=scope,
+        tenant_id=tenant_id,
+    )
+
+
+@router.post("/jobs")
+def enqueue_admin_job(
+    payload: dict[str, Any],
+    session: Session = Depends(get_session),
+    actor: AuthUser = Depends(require_roles("operator", "admin")),
+) -> dict[str, Any]:
+    job_type = payload.get("job_type")
+    if job_type not in SUPPORTED_ADMIN_JOB_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"job_type must be one of {sorted(SUPPORTED_ADMIN_JOB_TYPES)}",
+        )
+    job = Job(
+        job_id=new_id("job"),
+        job_type=job_type,
+        payload_jsonb=payload.get("payload", {}),
+        status="queued",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return {
+        "job_id": job.job_id,
+        "job_type": job.job_type,
+        "status": job.status,
+        "queued_by": actor.email,
+    }

@@ -182,8 +182,7 @@ Operators must be able to manage these documents through:
 
 * a web UI
 * a REST admin API
-* YAML import/export
-* JSON import/export
+* YAML/JSON import/export
 
 ### 7.3 Lifecycle
 
@@ -217,6 +216,8 @@ The runtime must resolve policy in the following order:
 5. global published config
 6. default runtime fallback
 
+API Ontology `source_precedence_key` values must bind to Policy Profile `source_precedence` entries, and precedence-based conflict handling must use the resolved precedence score after hard safety rules and scope resolution.
+
 ### 7.6 Publication Model
 
 A publication creates an immutable **Config Snapshot** containing:
@@ -227,6 +228,7 @@ A publication creates an immutable **Config Snapshot** containing:
 * hash/checksum
 * environment
 * scope
+* tenant_id nullable
 * published timestamp
 * publisher
 * release notes
@@ -298,6 +300,7 @@ Each API ontology entry shall include:
 * `repeat_policy`
 * `sensitivity_hint`
 * `source_trust`
+* `source_precedence_key`
 * `extractors`
 * `relation_templates`
 * `dedup_strategy_hint`
@@ -343,6 +346,7 @@ default_action: UPSERT
 repeat_policy: BYPASS
 sensitivity_hint: S2_PERSONAL
 source_trust: 100
+source_precedence_key: explicit_user_write
 extractors:
   - address_parser
 relation_templates:
@@ -368,6 +372,7 @@ default_action: OBSERVE
 repeat_policy: REQUIRED
 sensitivity_hint: S1_INTERNAL
 source_trust: 30
+source_precedence_key: weak_free_text_inference
 extractors:
   - topic_extractor
 relation_templates: []
@@ -506,6 +511,8 @@ This is the missing piece that becomes essential once humans must control freque
 ### 10.1 Purpose
 
 A Policy Profile is a versioned ruleset consumed by the Memory Policy Layer.
+
+API Ontology entries resolve their conflict precedence through the Policy Profile `source_precedence` table, using `source_precedence_key` as the binding.
 
 It defines:
 
@@ -671,6 +678,8 @@ This section directly addresses the earlier product concern.
 
 Deduplication and conflict resolution must be **memory-type-specific**, not universal.
 
+When a rule uses precedence to choose between competing values, the runtime must compare the precedence score resolved from the API Ontology `source_precedence_key` binding rather than the raw trust hint.
+
 ### 12.2 Resolution Modes
 
 * `DUPLICATE`
@@ -811,6 +820,8 @@ Use separate logical schemas:
 
 * id
 * environment
+* scope
+* tenant_id nullable
 * api_ontology_document_id
 * memory_ontology_document_id
 * policy_profile_document_id
@@ -818,6 +829,7 @@ Use separate logical schemas:
 * is_active
 * published_by
 * published_at
+* release_notes
 * rollback_of nullable
 
 `control.validation_results`
@@ -1046,7 +1058,7 @@ The frontend is an **operator console**, not an end-user app.
 ### 16.3 Required UX Features
 
 * schema-driven forms
-* raw YAML editor
+* raw YAML/JSON editor
 * diff viewer between revisions
 * publish confirmation modal
 * rollback confirmation modal
@@ -1277,7 +1289,7 @@ Result:
 ## 20. Acceptance Criteria
 
 1. A human operator can create and edit API Ontology, Memory Ontology, and Policy Profile documents from the admin UI.
-2. A human operator can import and export those documents as YAML.
+2. A human operator can import and export those documents as YAML or JSON.
 3. Invalid documents cannot be published.
 4. Every publication creates an immutable config snapshot.
 5. Every memory decision stores the config snapshot used.
@@ -1324,7 +1336,7 @@ Every admin action must be audit logged with:
 
 * `S4_RESTRICTED` content must never be persisted.
 * `S3_CONFIDENTIAL` content is blocked in v1 by default.
-* S2+ structured values must be stored with stronger protection than general metadata.
+* S2+ structured values must be stored in protected encrypted columns, with only coarse metadata and canonical keys retained in cleartext.
 * raw sensitive strings must not be embedded.
 * embeddings for sensitive memory types must use coarse summaries or be disabled.
 * tenant isolation must be enforced throughout config and memory access.

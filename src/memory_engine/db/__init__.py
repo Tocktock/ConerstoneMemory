@@ -12,6 +12,7 @@ from memory_engine.db.models import (
     Relation,
     RuntimeApiEvent,
     SignalCounter,
+    SignalObservation,
     ValidationResult,
 )
 
@@ -29,6 +30,6 @@ __all__ = [
     "Relation",
     "RuntimeApiEvent",
     "SignalCounter",
+    "SignalObservation",
     "ValidationResult",
 ]
-

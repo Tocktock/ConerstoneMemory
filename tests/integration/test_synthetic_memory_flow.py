@@ -38,6 +38,7 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "repeat_policy": "BYPASS",
                 "sensitivity_hint": "S2_PERSONAL",
                 "source_trust": 100,
+                "source_precedence_key": "explicit_user_write",
                 "extractors": ["address_parser"],
                 "relation_templates": ["USER_HAS_PRIMARY_ADDRESS"],
                 "dedup_strategy_hint": "EXACT_SLOT",
@@ -57,6 +58,7 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "repeat_policy": "REQUIRED",
                 "sensitivity_hint": "S1_INTERNAL",
                 "source_trust": 40,
+                "source_precedence_key": "repeated_behavioral_signal",
                 "extractors": ["topic_extractor"],
                 "relation_templates": [],
                 "dedup_strategy_hint": "TOPIC_SCORE",
@@ -76,6 +78,7 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "repeat_policy": "REQUIRED",
                 "sensitivity_hint": "S1_INTERNAL",
                 "source_trust": 30,
+                "source_precedence_key": "repeated_behavioral_signal",
                 "extractors": ["topic_extractor"],
                 "relation_templates": [],
                 "dedup_strategy_hint": "TOPIC_SCORE",
@@ -95,6 +98,7 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "repeat_policy": "BYPASS",
                 "sensitivity_hint": "S2_PERSONAL",
                 "source_trust": 90,
+                "source_precedence_key": "structured_business_write",
                 "extractors": ["customer_parser"],
                 "relation_templates": ["USER_WORKS_WITH_CUSTOMER"],
                 "dedup_strategy_hint": "ENTITY_RELATION",
@@ -198,9 +202,22 @@ def test_synthetic_memory_flow(client, db_session) -> None:
         "forget_rules": {"tombstone_on_delete": True, "remove_from_retrieval": True},
     }
 
-    api_doc = client.post("/v1/control/api-ontology", headers=headers, json={"definition_json": api_definition}).json()
-    memory_doc = client.post("/v1/control/memory-ontology", headers=headers, json={"definition_json": memory_definition}).json()
-    policy_doc = client.post("/v1/control/policy-profiles", headers=headers, json={"definition_json": policy_definition}).json()
+    scoped_payload = {"scope": "tenant", "tenant_id": "tenant_synthetic"}
+    api_doc = client.post(
+        "/v1/control/api-ontology",
+        headers=headers,
+        json={**scoped_payload, "definition_json": api_definition},
+    ).json()
+    memory_doc = client.post(
+        "/v1/control/memory-ontology",
+        headers=headers,
+        json={**scoped_payload, "definition_json": memory_definition},
+    ).json()
+    policy_doc = client.post(
+        "/v1/control/policy-profiles",
+        headers=headers,
+        json={**scoped_payload, "definition_json": policy_definition},
+    ).json()
 
     validation = client.post(
         "/v1/control/validate",
@@ -233,6 +250,8 @@ def test_synthetic_memory_flow(client, db_session) -> None:
         },
     ).json()
     assert publish["is_active"] is True
+    assert publish["release_notes"] == "synthetic test"
+    assert publish["api_ontology_document_id"] == api_doc["id"]
 
     address_ingest = client.post(
         "/v1/events/ingest",
@@ -254,8 +273,31 @@ def test_synthetic_memory_flow(client, db_session) -> None:
         json={"tenant_id": "tenant_synthetic", "user_id": "user_123", "memory_type": "profile.primary_address"},
     ).json()
     assert any(item["memory_type"] == "profile.primary_address" for item in address_results)
+    assert address_results[0]["payload"]["address"] == "123 Seongsu-ro, Seongdong-gu, Seoul"
 
-    for index in range(4):
+    second_address_ingest = client.post(
+        "/v1/events/ingest",
+        headers=headers,
+        json={
+            "tenant_id": "tenant_synthetic",
+            "user_id": "user_123",
+            "session_id": "session_b",
+            "api_name": "profile.updateAddress",
+            "structured_fields": {"address": "55 Teheran-ro, Gangnam-gu, Seoul"},
+        },
+    ).json()
+    assert second_address_ingest["decision"]["action"] == "UPSERT"
+    process_next_job(db_session, _bundle_resolver)
+
+    superseded_address_results = client.post(
+        "/v1/memory/query",
+        headers=headers,
+        json={"tenant_id": "tenant_synthetic", "user_id": "user_123", "memory_type": "profile.primary_address"},
+    ).json()
+    assert len(superseded_address_results) == 1
+    assert superseded_address_results[0]["payload"]["address"] == "55 Teheran-ro, Gangnam-gu, Seoul"
+
+    for index in range(5):
         response = client.post(
             "/v1/events/ingest",
             headers=headers,
