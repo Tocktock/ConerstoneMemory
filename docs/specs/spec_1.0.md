@@ -68,6 +68,8 @@ v1 covers:
 * explicit preference memories
 * user-to-customer relationship memories
 * repeated interest/topic memories
+* normalized API event envelopes with selected request/response facts
+* hybrid rule-based and LLM-assisted memory-worthiness evaluation
 * versioned API ontology definitions
 * versioned memory ontology definitions
 * versioned policy profiles
@@ -81,9 +83,11 @@ v1 excludes:
 
 * arbitrary executable code inside ontology definitions
 * autonomous ontology generation without human review
+* model-only persistence decisions that bypass final policy validation
 * full free-form knowledge graph reasoning
 * high-risk secret storage
 * medical, financial, or legal sensitive inference persistence by default
+* unrestricted raw request/response storage or model forwarding without redaction policy
 * separate graph database adoption
 
 ---
@@ -123,7 +127,7 @@ The runtime consists of four logical components:
    Defines what memories can exist and how they behave.
 
 3. **Memory Policy Layer**
-   Uses the ontologies plus policy parameters to decide block / observe / session / upsert / forget.
+   Uses the ontologies plus policy parameters and optional post-processing model recommendations to decide block / observe / session / upsert / forget.
 
 4. **Memory Engine**
    Normalizes, resolves, deduplicates, versions, stores, retrieves, and forgets memory.
@@ -244,8 +248,11 @@ Before publication, the system must validate:
 * reference integrity
 * candidate memory type existence
 * extraction strategy validity
+* event-match rule validity
+* request/response field selector validity
 * sensitivity ceiling compatibility
 * conflict strategy compatibility with cardinality
+* LLM allowed/blocked field path safety compatibility
 * policy threshold range validity
 
 ### 7.8 Simulation
@@ -256,6 +263,8 @@ Operators must be able to run a dry-run simulation on sample or historical event
 * new decision
 * changed reason codes
 * changed memory candidates
+* changed model recommendation fields
+* final policy override when model output differs from the final action
 * expected write delta
 * expected block delta
 
@@ -275,14 +284,17 @@ Rollback must be a first-class operation:
 
 ### 8.1 Purpose
 
-The API Ontology Registry translates an API event into semantic meaning.
+The API Ontology Registry translates a normalized API event envelope into semantic meaning.
 
 It answers:
 
 * What kind of event is this?
 * Is this event likely to create memory?
 * What memory types are eligible?
+* Which request/response fields matter?
 * Which extractor profile should run?
+* Should deterministic rules bypass the model?
+* Which fields may be sent to the model?
 * Which dedup and conflict hints apply?
 
 ### 8.2 Required Fields
@@ -291,10 +303,15 @@ Each API ontology entry shall include:
 
 * `api_name`
 * `enabled`
+* `event_match`
 * `capability_family`
 * `method_semantics`
 * `domain`
 * `description`
+* `request_field_selectors`
+* `response_field_selectors`
+* `normalization_rules`
+* `evidence_capture_policy`
 * `candidate_memory_types`
 * `default_action`
 * `repeat_policy`
@@ -302,11 +319,33 @@ Each API ontology entry shall include:
 * `source_trust`
 * `source_precedence_key`
 * `extractors`
+* `llm_usage_mode`
+* `llm_allowed_field_paths`
+* `llm_blocked_field_paths`
 * `relation_templates`
 * `dedup_strategy_hint`
 * `conflict_strategy_hint`
 * `tenant_override_allowed`
 * `notes`
+
+### 8.2.1 Event Matching and Payload Shaping
+
+`event_match` defines how an ontology entry binds to an incoming event envelope. At minimum it should support:
+
+* source system or service
+* route template or operation name
+* HTTP method if applicable
+* response outcome or status class when relevant
+
+`request_field_selectors` and `response_field_selectors` define which request/response facts are normalized into the decision input. These selectors must produce a bounded, typed, redacted event envelope rather than passing arbitrary raw payloads deeper into the runtime by default.
+
+`evidence_capture_policy` defines whether the runtime stores:
+
+* redacted summaries only
+* artifact references to redacted raw request/response bodies
+* neither, when the event does not need durable request/response evidence
+
+Raw request/response bodies are optional evidence artifacts. They are not the default policy-layer input.
 
 ### 8.3 Capability Families
 
@@ -336,10 +375,23 @@ Supported default actions:
 ```yaml
 api_name: profile.updateAddress
 enabled: true
+event_match:
+  source_system: profile_service
+  http_method: POST
+  route_template: /v1/profile/address
 capability_family: PROFILE_WRITE
 method_semantics: WRITE
 domain: profile
 description: User explicitly updates their primary address
+request_field_selectors:
+  - $.request.body.address
+response_field_selectors:
+  - $.response.body.normalized_address
+normalization_rules:
+  primary_fact_source: response_then_request
+evidence_capture_policy:
+  request: summary_plus_artifact_ref
+  response: summary_only
 candidate_memory_types:
   - profile.primary_address
 default_action: UPSERT
@@ -349,12 +401,17 @@ source_trust: 100
 source_precedence_key: explicit_user_write
 extractors:
   - address_parser
+llm_usage_mode: DISABLED
+llm_allowed_field_paths:
+  - $.request.body.address
+llm_blocked_field_paths:
+  - $.request.headers.authorization
 relation_templates:
   - USER_HAS_PRIMARY_ADDRESS
 dedup_strategy_hint: EXACT_SLOT
 conflict_strategy_hint: SUPERSEDE_BY_PRECEDENCE
 tenant_override_allowed: true
-notes: Explicit user write. Should bypass frequency gate.
+notes: Explicit user write. Should bypass both frequency gate and model escalation.
 ```
 
 ### 8.6 Example: Low-Trust Read API
@@ -362,10 +419,23 @@ notes: Explicit user write. Should bypass frequency gate.
 ```yaml
 api_name: search.webSearch
 enabled: true
+event_match:
+  source_system: search_service
+  http_method: GET
+  route_template: /v1/search
 capability_family: SEARCH_READ
 method_semantics: READ
 domain: search
 description: General web search request
+request_field_selectors:
+  - $.request.query.q
+response_field_selectors:
+  - $.response.body.result_topics[*]
+normalization_rules:
+  primary_fact_source: request_then_response
+evidence_capture_policy:
+  request: summary_only
+  response: none
 candidate_memory_types:
   - interest.topic
 default_action: OBSERVE
@@ -375,6 +445,12 @@ source_trust: 30
 source_precedence_key: weak_free_text_inference
 extractors:
   - topic_extractor
+llm_usage_mode: ASSIST
+llm_allowed_field_paths:
+  - $.request.query.q
+  - $.response.body.result_topics[*]
+llm_blocked_field_paths:
+  - $.request.headers.authorization
 relation_templates: []
 dedup_strategy_hint: TOPIC_SCORE
 conflict_strategy_hint: NO_DIRECT_CONFLICT
@@ -521,6 +597,7 @@ It defines:
 * burst penalties
 * sensitivity classification policy
 * precedence scores by source
+* model escalation policy
 * typo-correction windows
 * forget behavior
 * embedding redaction policy
@@ -530,6 +607,7 @@ It defines:
 * `frequency`
 * `sensitivity`
 * `source_precedence`
+* `model_inference`
 * `conflict_windows`
 * `embedding_rules`
 * `forget_rules`
@@ -566,6 +644,13 @@ source_precedence:
   structured_business_write: 80
   repeated_behavioral_signal: 50
   weak_free_text_inference: 30
+model_inference:
+  enabled: true
+  explicit_write_bypass: true
+  hard_rule_bypass: true
+  require_policy_validation: true
+  uncertainty_action: OBSERVE
+  log_reasoning_summary: true
 conflict_windows:
   typo_correction_minutes: 5
 embedding_rules:
@@ -584,19 +669,38 @@ forget_rules:
 
 The Policy Layer consumes:
 
-* normalized API event
+* normalized API event envelope
 * active config snapshot
 * prior counters
 * optional prior memory lookup
 * tenant context
+* optional redacted raw request/response artifact references
+
+### 11.1.1 Normalized Event Envelope
+
+The normalized event envelope must carry enough context to make a memory decision without requiring the runtime to trust arbitrary raw payloads.
+
+At minimum, the envelope should support:
+
+* actor context: `tenant_id`, `user_id`, `session_id`, `occurred_at`
+* event identity: `source_system`, `api_name`, `http_method`, `route_template`
+* request facts: selected normalized request fields
+* response facts: selected normalized response fields and outcome/status
+* summaries: `request_summary`, `response_summary`
+* provenance: request id, trace id, source channel when available
+* safety metadata: redaction policy version, explicit sensitivity hints, artifact references
+
+The primary policy-layer input should be normalized request/response facts plus redacted summaries. Raw request/response bodies should remain optional evidence artifacts referenced by id or URI after redaction and size checks.
 
 ### 11.2 Subcomponents
 
 * **Event Normalizer**
+* **Deterministic Router**
 * **Candidate Extractor**
+* **Model Recommendation Stage**
 * **Sensitivity Evaluator**
 * **Frequency Analyzer**
-* **Decision Engine**
+* **Final Policy Gate**
 
 ### 11.3 Output
 
@@ -612,6 +716,14 @@ The Policy Layer must output a decision envelope:
     "SENSITIVITY_ALLOWED",
     "REPEAT_BYPASSED_FOR_EXPLICIT_WRITE"
   ],
+  "llm_assist": {
+    "invoked": false,
+    "recommendation": "UPSERT",
+    "confidence": 0.0,
+    "model_name": null,
+    "prompt_template_key": null,
+    "prompt_version": null
+  },
   "candidates": [
     {
       "memory_type": "profile.primary_address",
@@ -622,7 +734,26 @@ The Policy Layer must output a decision envelope:
 }
 ```
 
-### 11.4 Frequency Calculation
+`action` is the final policy action after applying both deterministic rules and any model-assisted recommendation. The model may recommend; the policy layer decides.
+
+### 11.4 Hybrid Decision Order
+
+The default v1 hybrid decision order shall be:
+
+1. normalize the incoming event envelope using API Ontology selectors and normalization rules
+2. apply hard safety rules and explicit deterministic routing rules
+3. decide whether the matched API Ontology entry should bypass, optionally invoke, or require the model
+4. if invoked, let the model produce:
+   * memory-worthiness recommendation
+   * candidate memory proposals
+   * confidence
+   * short reasoning summary
+5. validate model output against API Ontology, Memory Ontology, Policy Profile, and hard safety rules
+6. produce the final action and final candidate set
+
+Explicit writes, explicit forget/delete events, and hard-blocked sensitive events should bypass model invocation when possible.
+
+### 11.5 Frequency Calculation
 
 Frequency must be calculated by **semantic signal key**, not raw API count.
 
@@ -645,7 +776,7 @@ repeat_score =
 
 This formula is not hardcoded forever. Its weights and thresholds must come from the active Policy Profile.
 
-### 11.5 Sensitivity Calculation
+### 11.6 Sensitivity Calculation
 
 Effective sensitivity must be:
 
@@ -654,11 +785,12 @@ effective_sensitivity = max(
   api_ontology.sensitivity_hint,
   extracted_field_tags,
   classifier_result,
+  llm_sensitivity_hint,
   tenant_override
 )
 ```
 
-### 11.6 Hard Rules
+### 11.7 Hard Rules
 
 The Policy Layer must enforce:
 
@@ -667,6 +799,9 @@ The Policy Layer must enforce:
 * explicit delete/forget APIs => always `FORGET`
 * unknown write APIs => never long-term persist until classified
 * unknown read/search APIs => at most `OBSERVE`
+* model output must never bypass hard safety rules, sensitivity ceilings, or ontology eligibility rules
+* uncertain model output defaults to `OBSERVE` under the default v1 policy
+* explicit user writes may bypass model invocation when configured by API Ontology and Policy Profile
 
 ---
 
@@ -748,6 +883,7 @@ The Memory Engine shall:
 * resolve conflicts
 * version memories
 * persist memory/evidence/relations
+* persist model inference traces
 * create embeddings
 * retrieve relevant memories
 * forget or tombstone memories
@@ -759,6 +895,7 @@ The system shall store:
 * **facts and preferences** as structured records
 * **relations** as structured edges
 * **evidence** as immutable event references
+* **model inference traces** as auditable decision artifacts
 * **embeddings** as retrieval indexes in PostgreSQL via pgvector
 
 ### 13.3 Retrieval Strategy
@@ -860,13 +997,37 @@ Use separate logical schemas:
 * tenant_id
 * user_id
 * session_id
+* source_system nullable
 * api_name
+* http_method nullable
+* route_template nullable
 * capability_family
+* response_status nullable
 * request_summary
 * response_summary
+* request_artifact_ref nullable
+* response_artifact_ref nullable
+* redaction_policy_version nullable
 * structured_fields_jsonb
 * status
 * occurred_at
+
+`runtime.inference_runs`
+
+* inference_id
+* source_event_id
+* config_snapshot_id
+* model_provider
+* model_name
+* prompt_template_key
+* prompt_version
+* input_hash
+* llm_recommendation
+* llm_confidence
+* llm_reasoning_summary
+* candidate_jsonb
+* final_action
+* created_at
 
 `runtime.signal_counters`
 
@@ -983,7 +1144,7 @@ There shall be two Python services sharing the same codebase:
 ### 15.2 API Service Responsibilities
 
 * admin APIs for control plane
-* event ingestion API
+* event ingestion API with normalized event envelopes
 * retrieval API
 * memory browser API
 * simulation API
@@ -992,6 +1153,7 @@ There shall be two Python services sharing the same codebase:
 ### 15.3 Worker Responsibilities
 
 * asynchronous event processing
+* model-assisted candidate extraction and memory-worthiness recommendation
 * embedding generation
 * conflict resolution jobs
 * replay jobs
@@ -1135,24 +1297,45 @@ The following operational flows must work through one Compose project:
 ```yaml
 api_name: crm.createDeal
 enabled: true
+event_match:
+  source_system: crm_service
+  http_method: POST
+  route_template: /v1/deals
 capability_family: RELATION_WRITE
 method_semantics: WRITE
 domain: crm
 description: Creates a business deal with a customer
+request_field_selectors:
+  - $.request.body.customer
+  - $.request.body.domain
+response_field_selectors:
+  - $.response.body.customer_id
+normalization_rules:
+  primary_fact_source: request_then_response
+evidence_capture_policy:
+  request: summary_plus_artifact_ref
+  response: summary_only
 candidate_memory_types:
   - relationship.customer
 default_action: UPSERT
 repeat_policy: BYPASS
 sensitivity_hint: S2_PERSONAL
 source_trust: 90
+source_precedence_key: structured_business_write
 extractors:
   - customer_parser
+llm_usage_mode: DISABLED
+llm_allowed_field_paths:
+  - $.request.body.customer
+  - $.request.body.domain
+llm_blocked_field_paths:
+  - $.request.headers.authorization
 relation_templates:
   - USER_WORKS_WITH_CUSTOMER
 dedup_strategy_hint: ENTITY_RELATION
 conflict_strategy_hint: DEDUP_BY_CANONICAL_OBJECT
 tenant_override_allowed: true
-notes: Strong write signal.
+notes: Strong write signal. Model bypass is preferred for explicit CRM writes.
 ```
 
 ### 18.2 Memory Ontology: Output Language Preference
@@ -1210,7 +1393,12 @@ Event:
 
 ```json
 {
+  "source_system": "profile_service",
   "api_name": "profile.updateAddress",
+  "http_method": "POST",
+  "route_template": "/v1/profile/address",
+  "request_summary": "User submitted a new primary address",
+  "response_summary": "Profile service accepted normalized primary address",
   "structured_fields": {
     "address": "123 Seongsu-ro, Seongdong-gu, Seoul"
   }
@@ -1220,6 +1408,7 @@ Event:
 Flow:
 
 * API ontology maps event to `PROFILE_WRITE`
+* explicit write path bypasses model escalation under the default policy
 * candidate memory type is `profile.primary_address`
 * repeat gate is bypassed
 * sensitivity is `S2_PERSONAL`
@@ -1237,8 +1426,10 @@ Events:
 Flow:
 
 * API ontology maps reads to `interest.topic`
+* model assistance may help score memory-worthiness or propose a topic candidate for ambiguous search/read events
 * topic extractor emits `real_estate_tax`
 * repeat score crosses threshold
+* final action still comes from the policy layer, not from the model alone
 * sensitivity remains within `S1_INTERNAL`
 * Memory Engine upserts `interest.topic`
 * score is reinforced on future matching events
@@ -1253,6 +1444,7 @@ Events:
 Flow:
 
 * both events generate `relationship.customer`
+* explicit CRM write path can bypass model invocation because the ontology marks it as a strong structured write
 * entity resolver canonicalizes the customer using domain anchor
 * relation deduplicates
 * evidence count increases
@@ -1303,6 +1495,11 @@ Result:
 13. duplicate customer aliases resolve to one canonical relation when anchor confidence is sufficient.
 14. all persisted memories are traceable to evidence records.
 15. deleted memories no longer appear in retrieval results.
+16. the ingestion contract supports a normalized event envelope with selected request/response facts and optional redacted artifact references.
+17. explicit write, explicit forget, and hard-blocked sensitive events can bypass model invocation under the active policy.
+18. model recommendations are recorded and policy-validated before persistence.
+19. uncertain model output defaults to `OBSERVE` under the default v1 policy.
+20. raw request/response payloads are never forwarded to the model unless allowed by ontology field-path rules and redaction policy.
 
 ---
 
@@ -1317,6 +1514,8 @@ The platform must emit:
 * duplicate/merge/supersede/conflict counts
 * config validation failures
 * publication and rollback events
+* model invocation counts
+* model-versus-policy disagreement counts
 * retrieval hit rate by memory type
 * tenant override usage
 
@@ -1338,6 +1537,8 @@ Every admin action must be audit logged with:
 * `S3_CONFIDENTIAL` content is blocked in v1 by default.
 * S2+ structured values must be stored in protected encrypted columns, with only coarse metadata and canonical keys retained in cleartext.
 * raw sensitive strings must not be embedded.
+* raw request/response bodies must not be forwarded to the model unless the matched ontology entry explicitly allows the selected field path and the active redaction policy permits it.
+* model prompts and logged reasoning summaries must exclude blocked field paths and prohibited sensitive content.
 * embeddings for sensitive memory types must use coarse summaries or be disabled.
 * tenant isolation must be enforced throughout config and memory access.
 * operator actions must require authenticated and authorized roles.
@@ -1348,16 +1549,17 @@ Every admin action must be audit logged with:
 
 The final v1 design is:
 
-**A human-configurable memory platform where API Ontology, Memory Ontology, and Policy Profiles are versioned data in PostgreSQL; operators manage them through a Next.js control plane; FastAPI executes them at runtime; PostgreSQL stores both structured memory and vector memory; and Docker Compose runs the entire stack as one deployable application.**
+**A human-configurable memory platform where API Ontology, Memory Ontology, and Policy Profiles are versioned data in PostgreSQL; operators manage them through a Next.js control plane; FastAPI executes a hybrid rule-plus-LLM policy layer over normalized API event envelopes; PostgreSQL stores structured memory, vector memory, and inference traces; and Docker Compose runs the entire stack as one deployable application.**
 
 ---
 
 ## Assumptions
 
 * The product needs a real operator control plane, not just internal developer-only configs.
-* API events can be normalized into structured fields before policy evaluation.
+* API events can be normalized into selected request/response facts before policy evaluation.
 * Per-tenant behavior differences are important enough to justify override support.
 * PostgreSQL is acceptable as the single durable store for config, memory, and vectors.
+* The post-processing model provider may change over time, but hard safety and final policy validation remain platform responsibilities.
 * Human operators are trusted to tune policy, but not to bypass non-overridable safety rules.
 
 ---
