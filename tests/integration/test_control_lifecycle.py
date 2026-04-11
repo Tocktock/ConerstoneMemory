@@ -29,6 +29,19 @@ def _api_definition(document_name: str, precedence_key: str = "explicit_user_wri
                 "dedup_strategy_hint": "EXACT_SLOT",
                 "conflict_strategy_hint": "SUPERSEDE_BY_PRECEDENCE",
                 "tenant_override_allowed": True,
+                "event_match": {
+                    "source_system": "profile_service",
+                    "http_method": "POST",
+                    "route_template": "/v1/profile/address",
+                },
+                "request_field_selectors": ["$.address"],
+                "response_field_selectors": ["$.normalized_address"],
+                "normalization_rules": {"primary_fact_source": "request_then_response"},
+                "evidence_capture_policy": {"request": "summary_only", "response": "summary_only"},
+                "llm_usage_mode": "ASSIST",
+                "prompt_template_key": "memory.hybrid.ingest.v1",
+                "llm_allowed_field_paths": ["$.normalized_fields.address"],
+                "llm_blocked_field_paths": [],
                 "notes": "",
             }
         ],
@@ -91,6 +104,15 @@ def _policy_definition() -> dict:
         "conflict_windows": {"typo_correction_minutes": 5},
         "embedding_rules": {"raw_sensitive_embedding_allowed": False, "redact_address_detail": True},
         "forget_rules": {"tombstone_on_delete": True, "remove_from_retrieval": True},
+        "model_inference": {
+            "enabled": True,
+            "explicit_write_bypass": True,
+            "hard_rule_bypass": True,
+            "require_policy_validation": True,
+            "low_confidence_threshold": 0.6,
+            "allow_low_confidence_persist": True,
+            "log_reasoning_summary": True,
+        },
     }
 
 

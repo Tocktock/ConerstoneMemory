@@ -320,6 +320,7 @@ Each API ontology entry shall include:
 * `source_precedence_key`
 * `extractors`
 * `llm_usage_mode`
+* `prompt_template_key` when `llm_usage_mode` is `ASSIST` or `REQUIRE`
 * `llm_allowed_field_paths`
 * `llm_blocked_field_paths`
 * `relation_templates`
@@ -337,7 +338,9 @@ Each API ontology entry shall include:
 * HTTP method if applicable
 * response outcome or status class when relevant
 
-`request_field_selectors` and `response_field_selectors` define which request/response facts are normalized into the decision input. These selectors must produce a bounded, typed, redacted event envelope rather than passing arbitrary raw payloads deeper into the runtime by default.
+`request_field_selectors` and `response_field_selectors` define which request/response facts are normalized into the decision input. These selectors evaluate against `request.selected_fields` and `response.selected_fields` from the ingest envelope. They must produce a bounded, typed, redacted event envelope rather than passing arbitrary raw payloads deeper into the runtime by default.
+
+`llm_allowed_field_paths` and `llm_blocked_field_paths` apply to the normalized event envelope used for prompt assembly. In practice, policy-allowed prompt paths should usually target `$.normalized_fields.*` rather than raw request/response structures.
 
 `evidence_capture_policy` defines whether the runtime stores:
 
@@ -345,7 +348,7 @@ Each API ontology entry shall include:
 * artifact references to redacted raw request/response bodies
 * neither, when the event does not need durable request/response evidence
 
-Raw request/response bodies are optional evidence artifacts. They are not the default policy-layer input.
+`POST /v1/events/ingest` accepts redacted summaries, structured selected fields, and optional artifact references only. Raw request/response bodies are optional evidence artifacts and are not accepted as direct policy-layer input.
 
 ### 8.3 Capability Families
 
@@ -384,9 +387,9 @@ method_semantics: WRITE
 domain: profile
 description: User explicitly updates their primary address
 request_field_selectors:
-  - $.request.body.address
+  - $.address
 response_field_selectors:
-  - $.response.body.normalized_address
+  - $.normalized_address
 normalization_rules:
   primary_fact_source: response_then_request
 evidence_capture_policy:
@@ -402,10 +405,9 @@ source_precedence_key: explicit_user_write
 extractors:
   - address_parser
 llm_usage_mode: DISABLED
-llm_allowed_field_paths:
-  - $.request.body.address
-llm_blocked_field_paths:
-  - $.request.headers.authorization
+prompt_template_key: null
+llm_allowed_field_paths: []
+llm_blocked_field_paths: []
 relation_templates:
   - USER_HAS_PRIMARY_ADDRESS
 dedup_strategy_hint: EXACT_SLOT
@@ -428,9 +430,9 @@ method_semantics: READ
 domain: search
 description: General web search request
 request_field_selectors:
-  - $.request.query.q
+  - $.query
 response_field_selectors:
-  - $.response.body.result_topics[*]
+  - $.result_topics
 normalization_rules:
   primary_fact_source: request_then_response
 evidence_capture_policy:
@@ -446,11 +448,11 @@ source_precedence_key: weak_free_text_inference
 extractors:
   - topic_extractor
 llm_usage_mode: ASSIST
+prompt_template_key: memory.hybrid.search.v1
 llm_allowed_field_paths:
-  - $.request.query.q
-  - $.response.body.result_topics[*]
-llm_blocked_field_paths:
-  - $.request.headers.authorization
+  - $.normalized_fields.query
+  - $.normalized_fields.result_topics
+llm_blocked_field_paths: []
 relation_templates: []
 dedup_strategy_hint: TOPIC_SCORE
 conflict_strategy_hint: NO_DIRECT_CONFLICT
@@ -649,7 +651,8 @@ model_inference:
   explicit_write_bypass: true
   hard_rule_bypass: true
   require_policy_validation: true
-  uncertainty_action: OBSERVE
+  low_confidence_threshold: 0.60
+  allow_low_confidence_persist: true
   log_reasoning_summary: true
 conflict_windows:
   typo_correction_minutes: 5
@@ -684,13 +687,52 @@ At minimum, the envelope should support:
 
 * actor context: `tenant_id`, `user_id`, `session_id`, `occurred_at`
 * event identity: `source_system`, `api_name`, `http_method`, `route_template`
-* request facts: selected normalized request fields
-* response facts: selected normalized response fields and outcome/status
-* summaries: `request_summary`, `response_summary`
+* request side: `request.summary`, `request.selected_fields`, optional `request.artifact_ref`
+* response side: `response.status_code`, `response.summary`, `response.selected_fields`, optional `response.artifact_ref`
 * provenance: request id, trace id, source channel when available
 * safety metadata: redaction policy version, explicit sensitivity hints, artifact references
 
 The primary policy-layer input should be normalized request/response facts plus redacted summaries. Raw request/response bodies should remain optional evidence artifacts referenced by id or URI after redaction and size checks.
+
+The runtime contract for `POST /v1/events/ingest` is a clean-break nested envelope:
+
+```json
+{
+  "tenant_id": "tenant_x",
+  "user_id": "user_x",
+  "session_id": "session_x",
+  "occurred_at": "2026-04-11T12:00:00Z",
+  "source_system": "profile_service",
+  "api_name": "profile.updateAddress",
+  "http_method": "POST",
+  "route_template": "/v1/profile/address",
+  "request_id": "req_123",
+  "trace_id": "trace_123",
+  "source_channel": "api_gateway",
+  "redaction_policy_version": "v1",
+  "request": {
+    "summary": "User submitted a new primary address",
+    "selected_fields": {
+      "address": "123 Seongsu-ro, Seongdong-gu, Seoul"
+    },
+    "artifact_ref": {
+      "uri": "s3://bucket/key",
+      "checksum_sha256": "abc123",
+      "size_bytes": 2048
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "summary": "Profile service accepted normalized primary address",
+    "selected_fields": {
+      "normalized_address": "123 Seongsu-ro, Seongdong-gu, Seoul"
+    },
+    "artifact_ref": null
+  }
+}
+```
+
+Legacy flat top-level ingest fields such as `structured_fields`, `request_summary`, and `response_summary` are not accepted on this endpoint.
 
 ### 11.2 Subcomponents
 
@@ -997,20 +1039,28 @@ Use separate logical schemas:
 * tenant_id
 * user_id
 * session_id
-* source_system nullable
+* source_system
 * api_name
-* http_method nullable
-* route_template nullable
+* http_method
+* route_template
+* request_id nullable
+* trace_id nullable
+* source_channel nullable
 * capability_family
 * response_status nullable
-* request_summary
-* response_summary
-* request_artifact_ref nullable
-* response_artifact_ref nullable
+* request_summary nullable
+* response_summary nullable
+* request_fields_jsonb
+* response_fields_jsonb
+* request_artifact_jsonb nullable
+* response_artifact_jsonb nullable
 * redaction_policy_version nullable
-* structured_fields_jsonb
+* structured_fields_jsonb derived normalized flat field map used by extractors and persistence logic
+* decision_jsonb nullable
+* config_snapshot_id nullable
 * status
 * occurred_at
+* processed_at nullable
 
 `runtime.inference_runs`
 
@@ -1306,10 +1356,10 @@ method_semantics: WRITE
 domain: crm
 description: Creates a business deal with a customer
 request_field_selectors:
-  - $.request.body.customer
-  - $.request.body.domain
+  - $.customer
+  - $.domain
 response_field_selectors:
-  - $.response.body.customer_id
+  - $.customer_id
 normalization_rules:
   primary_fact_source: request_then_response
 evidence_capture_policy:
@@ -1325,11 +1375,9 @@ source_precedence_key: structured_business_write
 extractors:
   - customer_parser
 llm_usage_mode: DISABLED
-llm_allowed_field_paths:
-  - $.request.body.customer
-  - $.request.body.domain
-llm_blocked_field_paths:
-  - $.request.headers.authorization
+prompt_template_key: null
+llm_allowed_field_paths: []
+llm_blocked_field_paths: []
 relation_templates:
   - USER_WORKS_WITH_CUSTOMER
 dedup_strategy_hint: ENTITY_RELATION
@@ -1393,14 +1441,36 @@ Event:
 
 ```json
 {
+  "tenant_id": "tenant_x",
+  "user_id": "user_x",
+  "session_id": "session_x",
+  "occurred_at": "2026-04-11T12:00:00Z",
   "source_system": "profile_service",
   "api_name": "profile.updateAddress",
   "http_method": "POST",
   "route_template": "/v1/profile/address",
-  "request_summary": "User submitted a new primary address",
-  "response_summary": "Profile service accepted normalized primary address",
-  "structured_fields": {
-    "address": "123 Seongsu-ro, Seongdong-gu, Seoul"
+  "request_id": "req_123",
+  "trace_id": "trace_123",
+  "source_channel": "api_gateway",
+  "redaction_policy_version": "v1",
+  "request": {
+    "summary": "User submitted a new primary address",
+    "selected_fields": {
+      "address": "123 Seongsu-ro, Seongdong-gu, Seoul"
+    },
+    "artifact_ref": {
+      "uri": "s3://bucket/key",
+      "checksum_sha256": "abc123",
+      "size_bytes": 2048
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "summary": "Profile service accepted normalized primary address",
+    "selected_fields": {
+      "normalized_address": "123 Seongsu-ro, Seongdong-gu, Seoul"
+    },
+    "artifact_ref": null
   }
 }
 ```
@@ -1500,6 +1570,7 @@ Result:
 18. model recommendations are recorded and policy-validated before persistence.
 19. uncertain model output defaults to `OBSERVE` under the default v1 policy.
 20. raw request/response payloads are never forwarded to the model unless allowed by ontology field-path rules and redaction policy.
+21. the legacy flat ingest payload with top-level `structured_fields`, `request_summary`, or `response_summary` is rejected on `POST /v1/events/ingest`.
 
 ---
 

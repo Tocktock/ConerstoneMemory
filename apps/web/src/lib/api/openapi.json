@@ -2377,6 +2377,43 @@
         ],
         "title": "ArchiveResponse"
       },
+      "ArtifactRef": {
+        "properties": {
+          "uri": {
+            "type": "string",
+            "title": "Uri"
+          },
+          "checksum_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum Sha256"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "title": "ArtifactRef"
+      },
       "ConfigDocumentResponse": {
         "properties": {
           "id": {
@@ -2638,37 +2675,6 @@
             ],
             "title": "Session Id"
           },
-          "api_name": {
-            "type": "string",
-            "title": "Api Name"
-          },
-          "structured_fields": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Structured Fields"
-          },
-          "request_summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Request Summary"
-          },
-          "response_summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Response Summary"
-          },
           "occurred_at": {
             "anyOf": [
               {
@@ -2680,15 +2686,164 @@
               }
             ],
             "title": "Occurred At"
+          },
+          "source_system": {
+            "type": "string",
+            "title": "Source System"
+          },
+          "api_name": {
+            "type": "string",
+            "title": "Api Name"
+          },
+          "http_method": {
+            "type": "string",
+            "title": "Http Method"
+          },
+          "route_template": {
+            "type": "string",
+            "title": "Route Template"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          },
+          "source_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Channel"
+          },
+          "redaction_policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Policy Version"
+          },
+          "request": {
+            "$ref": "#/components/schemas/EventPayloadSide"
+          },
+          "response": {
+            "$ref": "#/components/schemas/EventResponseSide"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "tenant_id",
           "user_id",
-          "api_name"
+          "source_system",
+          "api_name",
+          "http_method",
+          "route_template",
+          "request",
+          "response"
         ],
         "title": "EventIngestRequest"
+      },
+      "EventPayloadSide": {
+        "properties": {
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "selected_fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selected Fields"
+          },
+          "artifact_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EventPayloadSide"
+      },
+      "EventResponseSide": {
+        "properties": {
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "selected_fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selected Fields"
+          },
+          "artifact_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EventResponseSide"
       },
       "ForgetRequest": {
         "properties": {

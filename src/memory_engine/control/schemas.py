@@ -35,6 +35,9 @@ EmbedMode = Literal["DISABLED", "SUMMARY", "COARSE_SUMMARY_ONLY"]
 RetrievalMode = Literal["EXACT", "EXACT_THEN_VECTOR", "RELATION_THEN_VECTOR", "VECTOR_PLUS_FILTER"]
 SensitivityLevel = Literal["S0_PUBLIC", "S1_INTERNAL", "S2_PERSONAL", "S3_CONFIDENTIAL", "S4_RESTRICTED"]
 DocumentStatus = Literal["draft", "validated", "approved", "published", "archived"]
+PrimaryFactSource = Literal["request_only", "response_only", "request_then_response", "response_then_request"]
+EvidenceCaptureMode = Literal["none", "summary_only", "summary_plus_artifact_ref"]
+LLMUsageMode = Literal["DISABLED", "ASSIST", "REQUIRE"]
 
 
 SENSITIVITY_RANK = {
@@ -64,7 +67,48 @@ class APIOntologyEntry(BaseModel):
     dedup_strategy_hint: str
     conflict_strategy_hint: str
     tenant_override_allowed: bool
+    event_match: "EventMatchConfig"
+    request_field_selectors: list[str]
+    response_field_selectors: list[str]
+    normalization_rules: "NormalizationRulesConfig"
+    evidence_capture_policy: "EvidenceCapturePolicyConfig"
+    llm_usage_mode: LLMUsageMode = "DISABLED"
+    prompt_template_key: str | None = None
+    llm_allowed_field_paths: list[str] = Field(default_factory=list)
+    llm_blocked_field_paths: list[str] = Field(default_factory=list)
     notes: str | None = None
+
+    @field_validator("request_field_selectors", "response_field_selectors", "llm_allowed_field_paths", "llm_blocked_field_paths")
+    @classmethod
+    def validate_json_paths(cls, value: list[str]) -> list[str]:
+        invalid = [item for item in value if not item.startswith("$.")]
+        if invalid:
+            raise ValueError(f"All selector paths must start with $.: {invalid}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_llm_fields(self) -> "APIOntologyEntry":
+        if self.llm_usage_mode != "DISABLED" and not self.prompt_template_key:
+            raise ValueError("prompt_template_key is required when llm_usage_mode is ASSIST or REQUIRE")
+        overlap = set(self.llm_allowed_field_paths) & set(self.llm_blocked_field_paths)
+        if overlap:
+            raise ValueError(f"llm_allowed_field_paths and llm_blocked_field_paths overlap: {sorted(overlap)}")
+        return self
+
+
+class EventMatchConfig(BaseModel):
+    source_system: str = Field(min_length=1)
+    http_method: str = Field(min_length=1)
+    route_template: str = Field(min_length=1)
+
+
+class NormalizationRulesConfig(BaseModel):
+    primary_fact_source: PrimaryFactSource = "request_then_response"
+
+
+class EvidenceCapturePolicyConfig(BaseModel):
+    request: EvidenceCaptureMode = "summary_only"
+    response: EvidenceCaptureMode = "summary_only"
 
 
 class APIOntologyDefinition(BaseModel):
@@ -178,6 +222,22 @@ class ForgetRulesConfig(BaseModel):
     remove_from_retrieval: bool
 
 
+class ModelInferenceConfig(BaseModel):
+    enabled: bool
+    explicit_write_bypass: bool
+    hard_rule_bypass: bool
+    require_policy_validation: bool
+    low_confidence_threshold: float = Field(ge=0.0, le=1.0)
+    allow_low_confidence_persist: bool
+    log_reasoning_summary: bool
+
+    @model_validator(mode="after")
+    def validate_flags(self) -> "ModelInferenceConfig":
+        if self.allow_low_confidence_persist and not self.require_policy_validation:
+            raise ValueError("allow_low_confidence_persist requires require_policy_validation")
+        return self
+
+
 class PolicyProfileDefinition(BaseModel):
     profile_name: str
     frequency: FrequencyConfig
@@ -186,6 +246,7 @@ class PolicyProfileDefinition(BaseModel):
     conflict_windows: ConflictWindowConfig
     embedding_rules: EmbeddingRulesConfig
     forget_rules: ForgetRulesConfig
+    model_inference: ModelInferenceConfig
 
     @field_validator("source_precedence")
     @classmethod

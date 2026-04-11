@@ -109,6 +109,17 @@ type BackendDecision = {
   evidence_count?: number;
   document_version?: string;
   document_kind?: string;
+  source_system?: string;
+  http_method?: string;
+  route_template?: string;
+  inference_invoked?: boolean;
+  inference_provider?: string | null;
+  model_name?: string | null;
+  prompt_template_key?: string | null;
+  prompt_version?: string | null;
+  model_recommendation?: string | null;
+  model_confidence?: number | null;
+  reasoning_summary?: string | null;
   timestamp: string;
 };
 
@@ -453,27 +464,89 @@ function parseSampleEvent(sampleEvent: string) {
       .map(([key, ...rest]) => [key, rest.join(": ")])
   );
   const action = String(event.action ?? "docs.openDocument");
-  return {
+  const user = String(event.user ?? "user_ui");
+  const base = {
     tenant_id: "tenant_ui",
-    user_id: String(event.user ?? "user_ui"),
+    user_id: user,
+    session_id: "session_ui",
+    source_channel: "ui_simulator",
+    redaction_policy_version: "v1",
+  };
+  if (action === "profile.updateAddress") {
+    return {
+      ...base,
+      source_system: "profile_service",
+      api_name: action,
+      http_method: "POST",
+      route_template: "/v1/profile/address",
+      request: {
+        summary: "User submitted a new primary address",
+        selected_fields: { address: "123 Seongsu-ro, Seongdong-gu, Seoul" },
+        artifact_ref: null,
+      },
+      response: {
+        status_code: 200,
+        summary: "Profile service accepted normalized primary address",
+        selected_fields: { normalized_address: "123 Seongsu-ro, Seongdong-gu, Seoul" },
+        artifact_ref: null,
+      },
+    };
+  }
+  if (action === "search.webSearch") {
+    return {
+      ...base,
+      source_system: "search_service",
+      api_name: action,
+      http_method: "GET",
+      route_template: "/v1/search",
+      request: {
+        summary: "User searched the web",
+        selected_fields: { query: "one off search" },
+        artifact_ref: null,
+      },
+      response: {
+        status_code: 200,
+        summary: "Search service returned results",
+        selected_fields: {},
+        artifact_ref: null,
+      },
+    };
+  }
+  return {
+    ...base,
+    source_system: "docs_service",
     api_name: action,
-    structured_fields:
-      action === "profile.updateAddress"
-        ? { address: "123 Seongsu-ro, Seongdong-gu, Seoul" }
-        : action === "search.webSearch"
-          ? { query: "one off search" }
-        : { document_title: "Real Estate Tax Guide" },
+    http_method: "GET",
+    route_template: "/v1/docs/{documentId}",
+    request: {
+      summary: "User opened a document",
+      selected_fields: { document_title: "Real Estate Tax Guide" },
+      artifact_ref: null,
+    },
+    response: {
+      status_code: 200,
+      summary: "Document service returned the content",
+      selected_fields: {},
+      artifact_ref: null,
+    },
   };
 }
 
 function toSimulationRun(result: BackendSimulationResponse, configId: string, sampleEvent: string): SimulationRun {
+  const llmAssist = (result.new_decision?.llm_assist as Record<string, unknown> | undefined) ?? {};
+  const modelRecommendation = typeof llmAssist.recommendation === "string" ? llmAssist.recommendation : null;
+  const afterDecision = String(result.new_decision?.action ?? "n/a");
   return {
     id: `simulation-${configId}`,
     documentId: configId,
     sampleEvent,
     timestamp: new Date().toISOString(),
     beforeDecision: String(result.old_decision?.action ?? "n/a"),
-    afterDecision: String(result.new_decision?.action ?? "n/a"),
+    afterDecision,
+    inferenceInvoked: Boolean(llmAssist.invoked),
+    modelRecommendation,
+    modelConfidence: typeof llmAssist.confidence === "number" ? llmAssist.confidence : null,
+    policyOverride: modelRecommendation && modelRecommendation !== afterDecision ? afterDecision : null,
     activeSnapshotId: result.active_snapshot_id ?? null,
     candidateSnapshotId: result.candidate_snapshot_id ?? null,
     reasonCodes:
@@ -564,6 +637,17 @@ function toDecisionRecord(data: BackendDecision): DecisionRecord {
     evidenceCount: data.evidence_count,
     documentVersion: data.document_version,
     documentKind: data.document_kind,
+    sourceSystem: data.source_system,
+    httpMethod: data.http_method,
+    routeTemplate: data.route_template,
+    inferenceInvoked: data.inference_invoked,
+    inferenceProvider: data.inference_provider ?? null,
+    modelName: data.model_name ?? null,
+    promptTemplateKey: data.prompt_template_key ?? null,
+    promptVersion: data.prompt_version ?? null,
+    modelRecommendation: data.model_recommendation ?? null,
+    modelConfidence: data.model_confidence ?? null,
+    reasoningSummary: data.reasoning_summary ?? null,
     timestamp: data.timestamp,
   };
 }

@@ -10,7 +10,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from memory_engine.config.settings import get_settings
-from memory_engine.control.schemas import MemoryOntologyDefinition, PolicyProfileDefinition, SENSITIVITY_RANK
+from memory_engine.control.schemas import APIOntologyDefinition, MemoryOntologyDefinition, PolicyProfileDefinition, SENSITIVITY_RANK
 from memory_engine.db.models import (
     ConfigDocument,
     ConfigPublication,
@@ -26,7 +26,7 @@ from memory_engine.db.models import (
 )
 from memory_engine.id_utils import new_id, utcnow
 from memory_engine.ops.metrics import increment_metric
-from memory_engine.runtime.policy import evaluate_event
+from memory_engine.runtime.policy import evaluate_event, match_api_entry, normalize_event_fields
 from memory_engine.runtime.protection import protect_payload, restore_payload
 from memory_engine.runtime.schemas import DecisionEnvelope, EventIngestRequest, ForgetRequest, MemoryQueryRequest, QueryResult
 from memory_engine.worker.embeddings import get_embedding_provider
@@ -473,23 +473,42 @@ def ingest_event(
     snapshot: ConfigPublication,
 ) -> tuple[RuntimeApiEvent, DecisionEnvelope, Job]:
     envelope = evaluate_event(session, event_request, bundle, snapshot)
-    api_definition = bundle["api_ontology"].definition_jsonb
+    api_definition = APIOntologyDefinition.model_validate(bundle["api_ontology"].definition_jsonb)
+    api_entry = match_api_entry(api_definition, event_request)
     capability_family = "UNKNOWN"
+    normalized_fields: dict[str, Any] = {}
+    request_artifact = None
+    response_artifact = None
     occurred_at = event_request.occurred_at or utcnow()
-    for entry in api_definition.get("entries", []):
-        if entry.get("api_name") == event_request.api_name:
-            capability_family = entry.get("capability_family", "UNKNOWN")
-            break
+    if api_entry is not None:
+        capability_family = api_entry.capability_family
+        normalized_fields = normalize_event_fields(event_request, api_entry.normalization_rules.primary_fact_source)
+        if api_entry.evidence_capture_policy.request == "summary_plus_artifact_ref" and event_request.request.artifact_ref:
+            request_artifact = event_request.request.artifact_ref.model_dump(mode="json")
+        if api_entry.evidence_capture_policy.response == "summary_plus_artifact_ref" and event_request.response.artifact_ref:
+            response_artifact = event_request.response.artifact_ref.model_dump(mode="json")
     event = RuntimeApiEvent(
         event_id=envelope.event_id,
         tenant_id=event_request.tenant_id,
         user_id=event_request.user_id,
         session_id=event_request.session_id,
+        source_system=event_request.source_system,
         api_name=event_request.api_name,
+        http_method=event_request.http_method.upper(),
+        route_template=event_request.route_template,
+        request_id=event_request.request_id,
+        trace_id=event_request.trace_id,
+        source_channel=event_request.source_channel,
         capability_family=capability_family,
-        request_summary=event_request.request_summary,
-        response_summary=event_request.response_summary,
-        structured_fields_jsonb=event_request.structured_fields,
+        response_status=event_request.response.status_code,
+        request_summary=event_request.request.summary,
+        response_summary=event_request.response.summary,
+        request_fields_jsonb=event_request.request.selected_fields,
+        response_fields_jsonb=event_request.response.selected_fields,
+        request_artifact_jsonb=request_artifact,
+        response_artifact_jsonb=response_artifact,
+        redaction_policy_version=event_request.redaction_policy_version,
+        structured_fields_jsonb=normalized_fields,
         decision_jsonb=envelope.model_dump(mode="json"),
         config_snapshot_id=snapshot.id,
         status="decided",
@@ -509,7 +528,7 @@ def ingest_event(
         increment_metric(session, "blocked_counts_by_sensitivity", labels={"sensitivity": max_sensitivity})
     repeat_bucket = f"{int(envelope.repeat_score * 4)}/4"
     increment_metric(session, "repeat_score_distributions", labels={"bucket": repeat_bucket})
-    if snapshot.scope in {"tenant", "emergency_override"} or event_request.structured_fields.get("tenant_override_sensitivity"):
+    if snapshot.scope in {"tenant", "emergency_override"} or normalized_fields.get("tenant_override_sensitivity"):
         increment_metric(session, "tenant_override_usage", labels={"scope": snapshot.scope})
     session.commit()
     session.refresh(event)
@@ -897,6 +916,9 @@ def timeline(session: Session, tenant_id: str, user_id: str) -> list[dict[str, A
         {
             "event_id": event.event_id,
             "api_name": event.api_name,
+            "source_system": event.source_system,
+            "http_method": event.http_method,
+            "route_template": event.route_template,
             "status": event.status,
             "decision": event.decision_jsonb,
             "occurred_at": event.occurred_at.isoformat(),
@@ -916,6 +938,17 @@ def decision_records(session: Session, *, tenant_id: str | None = None) -> list[
             "title": event.api_name,
             "action": (event.decision_jsonb or {}).get("action", event.status),
             "status": "blocked" if (event.decision_jsonb or {}).get("action") == "BLOCK" else "accepted",
+            "source_system": event.source_system,
+            "http_method": event.http_method,
+            "route_template": event.route_template,
+            "inference_invoked": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("invoked", False),
+            "inference_provider": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("provider"),
+            "model_name": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("model_name"),
+            "prompt_template_key": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("prompt_template_key"),
+            "prompt_version": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("prompt_version"),
+            "model_recommendation": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("recommendation"),
+            "model_confidence": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("confidence"),
+            "reasoning_summary": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("reasoning_summary"),
             "scope": _snapshot_context(session, event.config_snapshot_id)[0],
             "tenant": event.tenant_id,
             "environment": _snapshot_context(session, event.config_snapshot_id)[1],

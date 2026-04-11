@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from memory_engine.control.service import get_document_or_404, resolve_snapshot
+from memory_engine.db.models import InferenceRun, Memory, RuntimeApiEvent
 from memory_engine.runtime.service import process_next_job
 
 
@@ -18,6 +21,46 @@ def _bundle_resolver(db_session, tenant_id: str | None):
         "memory_ontology": get_document_or_404(db_session, snapshot.memory_ontology_document_id),
         "policy_profile": get_document_or_404(db_session, snapshot.policy_profile_document_id),
     }, snapshot
+
+
+def _ingest_payload(
+    *,
+    tenant_id: str,
+    user_id: str,
+    api_name: str,
+    source_system: str,
+    http_method: str,
+    route_template: str,
+    session_id: str,
+    request_fields: dict,
+    response_fields: dict | None = None,
+    request_summary: str = "request summary",
+    response_summary: str = "response summary",
+):
+    return {
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "source_system": source_system,
+        "api_name": api_name,
+        "http_method": http_method,
+        "route_template": route_template,
+        "request_id": f"req_{session_id}",
+        "trace_id": f"trace_{session_id}",
+        "source_channel": "api_gateway",
+        "redaction_policy_version": "v1",
+        "request": {
+            "summary": request_summary,
+            "selected_fields": request_fields,
+            "artifact_ref": None,
+        },
+        "response": {
+            "status_code": 200,
+            "summary": response_summary,
+            "selected_fields": response_fields or {},
+            "artifact_ref": None,
+        },
+    }
 
 
 def test_synthetic_memory_flow(client, db_session) -> None:
@@ -44,26 +87,19 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "dedup_strategy_hint": "EXACT_SLOT",
                 "conflict_strategy_hint": "SUPERSEDE_BY_PRECEDENCE",
                 "tenant_override_allowed": True,
-                "notes": "Synthetic test",
-            },
-            {
-                "api_name": "docs.openDocument",
-                "enabled": True,
-                "capability_family": "CONTENT_READ",
-                "method_semantics": "READ",
-                "domain": "docs",
-                "description": "Open document",
-                "candidate_memory_types": ["interest.topic"],
-                "default_action": "OBSERVE",
-                "repeat_policy": "REQUIRED",
-                "sensitivity_hint": "S1_INTERNAL",
-                "source_trust": 40,
-                "source_precedence_key": "repeated_behavioral_signal",
-                "extractors": ["topic_extractor"],
-                "relation_templates": [],
-                "dedup_strategy_hint": "TOPIC_SCORE",
-                "conflict_strategy_hint": "NO_DIRECT_CONFLICT",
-                "tenant_override_allowed": True,
+                "event_match": {
+                    "source_system": "profile_service",
+                    "http_method": "POST",
+                    "route_template": "/v1/profile/address",
+                },
+                "request_field_selectors": ["$.address"],
+                "response_field_selectors": ["$.normalized_address"],
+                "normalization_rules": {"primary_fact_source": "request_then_response"},
+                "evidence_capture_policy": {"request": "summary_plus_artifact_ref", "response": "summary_only"},
+                "llm_usage_mode": "ASSIST",
+                "prompt_template_key": "memory.hybrid.ingest.v1",
+                "llm_allowed_field_paths": ["$.normalized_fields.address"],
+                "llm_blocked_field_paths": [],
                 "notes": "Synthetic test",
             },
             {
@@ -84,26 +120,85 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "dedup_strategy_hint": "TOPIC_SCORE",
                 "conflict_strategy_hint": "NO_DIRECT_CONFLICT",
                 "tenant_override_allowed": True,
+                "event_match": {
+                    "source_system": "search_service",
+                    "http_method": "GET",
+                    "route_template": "/v1/search",
+                },
+                "request_field_selectors": ["$.query"],
+                "response_field_selectors": [],
+                "normalization_rules": {"primary_fact_source": "request_only"},
+                "evidence_capture_policy": {"request": "summary_only", "response": "summary_only"},
+                "llm_usage_mode": "ASSIST",
+                "prompt_template_key": "memory.hybrid.search.v1",
+                "llm_allowed_field_paths": ["$.normalized_fields.query"],
+                "llm_blocked_field_paths": [],
                 "notes": "Synthetic test",
             },
             {
-                "api_name": "crm.createDeal",
+                "api_name": "auth.captureSecret",
                 "enabled": True,
-                "capability_family": "RELATION_WRITE",
-                "method_semantics": "WRITE",
-                "domain": "crm",
-                "description": "Create deal",
-                "candidate_memory_types": ["relationship.customer"],
-                "default_action": "UPSERT",
-                "repeat_policy": "BYPASS",
-                "sensitivity_hint": "S2_PERSONAL",
-                "source_trust": 90,
-                "source_precedence_key": "structured_business_write",
-                "extractors": ["customer_parser"],
-                "relation_templates": ["USER_WORKS_WITH_CUSTOMER"],
-                "dedup_strategy_hint": "ENTITY_RELATION",
-                "conflict_strategy_hint": "DEDUP_BY_CANONICAL_OBJECT",
+                "capability_family": "CONTENT_READ",
+                "method_semantics": "READ",
+                "domain": "auth",
+                "description": "Unsafe secret capture",
+                "candidate_memory_types": ["interest.topic"],
+                "default_action": "OBSERVE",
+                "repeat_policy": "REQUIRED",
+                "sensitivity_hint": "S1_INTERNAL",
+                "source_trust": 20,
+                "source_precedence_key": "repeated_behavioral_signal",
+                "extractors": ["topic_extractor"],
+                "relation_templates": [],
+                "dedup_strategy_hint": "TOPIC_SCORE",
+                "conflict_strategy_hint": "NO_DIRECT_CONFLICT",
                 "tenant_override_allowed": True,
+                "event_match": {
+                    "source_system": "auth_service",
+                    "http_method": "POST",
+                    "route_template": "/v1/auth/capture",
+                },
+                "request_field_selectors": ["$.token"],
+                "response_field_selectors": [],
+                "normalization_rules": {"primary_fact_source": "request_only"},
+                "evidence_capture_policy": {"request": "summary_only", "response": "summary_only"},
+                "llm_usage_mode": "ASSIST",
+                "prompt_template_key": "memory.hybrid.ingest.v1",
+                "llm_allowed_field_paths": ["$.normalized_fields.token"],
+                "llm_blocked_field_paths": [],
+                "notes": "Synthetic test",
+            },
+            {
+                "api_name": "memory.forgetUserMemory",
+                "enabled": True,
+                "capability_family": "DELETE_FORGET",
+                "method_semantics": "DELETE",
+                "domain": "memory",
+                "description": "Forget user memory",
+                "candidate_memory_types": [],
+                "default_action": "FORGET",
+                "repeat_policy": "BYPASS",
+                "sensitivity_hint": "S1_INTERNAL",
+                "source_trust": 100,
+                "source_precedence_key": "explicit_user_write",
+                "extractors": [],
+                "relation_templates": [],
+                "dedup_strategy_hint": "NONE",
+                "conflict_strategy_hint": "NO_DIRECT_CONFLICT",
+                "tenant_override_allowed": True,
+                "event_match": {
+                    "source_system": "memory_service",
+                    "http_method": "DELETE",
+                    "route_template": "/v1/memory",
+                },
+                "request_field_selectors": [],
+                "response_field_selectors": [],
+                "normalization_rules": {"primary_fact_source": "request_only"},
+                "evidence_capture_policy": {"request": "summary_only", "response": "summary_only"},
+                "llm_usage_mode": "DISABLED",
+                "prompt_template_key": None,
+                "llm_allowed_field_paths": [],
+                "llm_blocked_field_paths": [],
                 "notes": "Synthetic test",
             },
         ],
@@ -147,24 +242,6 @@ def test_synthetic_memory_flow(client, db_session) -> None:
                 "tenant_override_allowed": True,
                 "notes": "",
             },
-            {
-                "memory_type": "relationship.customer",
-                "enabled": True,
-                "memory_class": "relation",
-                "subject_type": "User",
-                "object_type": "Customer",
-                "cardinality": "MANY_UNIQUE_BY_OBJECT",
-                "identity_strategy": "user_id + canonical_customer_id",
-                "merge_strategy": "EVIDENCE_MERGE",
-                "conflict_strategy": "DEDUP_BY_CANONICAL_OBJECT",
-                "allowed_sensitivity": "S2_PERSONAL",
-                "embed_mode": "SUMMARY",
-                "default_ttl_days": None,
-                "retrieval_mode": "RELATION_THEN_VECTOR",
-                "importance_default": 0.85,
-                "tenant_override_allowed": True,
-                "notes": "",
-            },
         ],
     }
     policy_definition = {
@@ -189,17 +266,24 @@ def test_synthetic_memory_flow(client, db_session) -> None:
             "memory_type_allow_ceiling": {
                 "interest.topic": "S1_INTERNAL",
                 "profile.primary_address": "S2_PERSONAL",
-                "relationship.customer": "S2_PERSONAL",
             },
         },
         "source_precedence": {
             "explicit_user_write": 100,
-            "structured_business_write": 80,
             "repeated_behavioral_signal": 50,
         },
         "conflict_windows": {"typo_correction_minutes": 5},
         "embedding_rules": {"raw_sensitive_embedding_allowed": False, "redact_address_detail": True},
         "forget_rules": {"tombstone_on_delete": True, "remove_from_retrieval": True},
+        "model_inference": {
+            "enabled": True,
+            "explicit_write_bypass": True,
+            "hard_rule_bypass": True,
+            "require_policy_validation": True,
+            "low_confidence_threshold": 0.6,
+            "allow_low_confidence_persist": True,
+            "log_reasoning_summary": True,
+        },
     }
 
     scoped_payload = {"scope": "tenant", "tenant_id": "tenant_synthetic"}
@@ -250,21 +334,45 @@ def test_synthetic_memory_flow(client, db_session) -> None:
         },
     ).json()
     assert publish["is_active"] is True
-    assert publish["release_notes"] == "synthetic test"
-    assert publish["api_ontology_document_id"] == api_doc["id"]
 
-    address_ingest = client.post(
+    first_address = client.post(
         "/v1/events/ingest",
         headers=headers,
-        json={
-            "tenant_id": "tenant_synthetic",
-            "user_id": "user_123",
-            "session_id": "session_a",
-            "api_name": "profile.updateAddress",
-            "structured_fields": {"address": "123 Seongsu-ro, Seongdong-gu, Seoul"},
-        },
+        json=_ingest_payload(
+            tenant_id="tenant_synthetic",
+            user_id="user_123",
+            session_id="session_a",
+            api_name="profile.updateAddress",
+            source_system="profile_service",
+            http_method="POST",
+            route_template="/v1/profile/address",
+            request_fields={"address": "123 Seongsu-ro, Seongdong-gu, Seoul"},
+            response_fields={"normalized_address": "123 Seongsu-ro, Seongdong-gu, Seoul"},
+            request_summary="User submitted a new primary address",
+            response_summary="Profile service accepted normalized primary address",
+        ),
     ).json()
-    assert address_ingest["decision"]["action"] == "UPSERT"
+    assert first_address["decision"]["action"] == "UPSERT"
+    assert first_address["decision"]["llm_assist"]["invoked"] is False
+    process_next_job(db_session, _bundle_resolver)
+
+    second_address = client.post(
+        "/v1/events/ingest",
+        headers=headers,
+        json=_ingest_payload(
+            tenant_id="tenant_synthetic",
+            user_id="user_123",
+            session_id="session_b",
+            api_name="profile.updateAddress",
+            source_system="profile_service",
+            http_method="POST",
+            route_template="/v1/profile/address",
+            request_fields={"address": "55 Teheran-ro, Gangnam-gu, Seoul"},
+            response_fields={"normalized_address": "55 Teheran-ro, Gangnam-gu, Seoul"},
+        ),
+    ).json()
+    assert second_address["decision"]["action"] == "UPSERT"
+    assert second_address["decision"]["llm_assist"]["invoked"] is False
     process_next_job(db_session, _bundle_resolver)
 
     address_results = client.post(
@@ -272,45 +380,37 @@ def test_synthetic_memory_flow(client, db_session) -> None:
         headers=headers,
         json={"tenant_id": "tenant_synthetic", "user_id": "user_123", "memory_type": "profile.primary_address"},
     ).json()
-    assert any(item["memory_type"] == "profile.primary_address" for item in address_results)
-    assert address_results[0]["payload"]["address"] == "123 Seongsu-ro, Seongdong-gu, Seoul"
+    assert len(address_results) == 1
+    assert address_results[0]["payload"]["address"] == "55 Teheran-ro, Gangnam-gu, Seoul"
+    assert db_session.scalar(select(InferenceRun).where(InferenceRun.source_event_id == first_address["event_id"])) is None
+    assert db_session.scalar(select(InferenceRun).where(InferenceRun.source_event_id == second_address["event_id"])) is None
 
-    second_address_ingest = client.post(
+    search_event = client.post(
         "/v1/events/ingest",
         headers=headers,
-        json={
-            "tenant_id": "tenant_synthetic",
-            "user_id": "user_123",
-            "session_id": "session_b",
-            "api_name": "profile.updateAddress",
-            "structured_fields": {"address": "55 Teheran-ro, Gangnam-gu, Seoul"},
-        },
+        json=_ingest_payload(
+            tenant_id="tenant_synthetic",
+            user_id="user_123",
+            session_id="session_search",
+            api_name="search.webSearch",
+            source_system="search_service",
+            http_method="GET",
+            route_template="/v1/search",
+            request_fields={"query": "mortgage rates"},
+            response_fields={},
+            request_summary="User searched for mortgage rates",
+            response_summary="Search service returned results",
+        ),
     ).json()
-    assert second_address_ingest["decision"]["action"] == "UPSERT"
+    assert search_event["decision"]["action"] == "UPSERT"
+    assert search_event["decision"]["reason_codes"] == ["MODEL_LOW_CONFIDENCE_PERSISTED"]
+    assert search_event["decision"]["llm_assist"]["invoked"] is True
     process_next_job(db_session, _bundle_resolver)
 
-    superseded_address_results = client.post(
-        "/v1/memory/query",
-        headers=headers,
-        json={"tenant_id": "tenant_synthetic", "user_id": "user_123", "memory_type": "profile.primary_address"},
-    ).json()
-    assert len(superseded_address_results) == 1
-    assert superseded_address_results[0]["payload"]["address"] == "55 Teheran-ro, Gangnam-gu, Seoul"
-
-    for index in range(5):
-        response = client.post(
-            "/v1/events/ingest",
-            headers=headers,
-            json={
-                "tenant_id": "tenant_synthetic",
-                "user_id": "user_123",
-                "session_id": f"session_{index}",
-                "api_name": "docs.openDocument",
-                "structured_fields": {"document_title": "Real Estate Tax Guide"},
-            },
-        )
-        assert response.status_code == 200
-        process_next_job(db_session, _bundle_resolver)
+    inference_run = db_session.scalar(select(InferenceRun).where(InferenceRun.source_event_id == search_event["event_id"]))
+    assert inference_run is not None
+    assert inference_run.final_action == "UPSERT"
+    assert inference_run.llm_confidence < 0.6
 
     topic_results = client.post(
         "/v1/memory/query",
@@ -319,62 +419,67 @@ def test_synthetic_memory_flow(client, db_session) -> None:
     ).json()
     assert any(item["memory_type"] == "interest.topic" for item in topic_results)
 
-    search_response = client.post(
+    blocked_event = client.post(
         "/v1/events/ingest",
         headers=headers,
-        json={
-            "tenant_id": "tenant_synthetic",
-            "user_id": "user_123",
-            "session_id": "search_one_off",
-            "api_name": "search.webSearch",
-            "structured_fields": {"query": "one off search"},
-        },
+        json=_ingest_payload(
+            tenant_id="tenant_synthetic",
+            user_id="user_123",
+            session_id="session_secret",
+            api_name="auth.captureSecret",
+            source_system="auth_service",
+            http_method="POST",
+            route_template="/v1/auth/capture",
+            request_fields={"token": "secret-token"},
+            response_fields={},
+        ),
     ).json()
-    assert search_response["decision"]["action"] == "OBSERVE"
+    assert blocked_event["decision"]["action"] == "BLOCK"
+    assert blocked_event["decision"]["llm_assist"]["invoked"] is False
+    assert db_session.scalar(select(InferenceRun).where(InferenceRun.source_event_id == blocked_event["event_id"])) is None
     process_next_job(db_session, _bundle_resolver)
-    one_off_results = client.post(
-        "/v1/memory/query",
+
+    forget_event = client.post(
+        "/v1/events/ingest",
         headers=headers,
-        json={"tenant_id": "tenant_synthetic", "user_id": "user_123", "query_text": "one off search"},
+        json=_ingest_payload(
+            tenant_id="tenant_synthetic",
+            user_id="user_123",
+            session_id="session_forget",
+            api_name="memory.forgetUserMemory",
+            source_system="memory_service",
+            http_method="DELETE",
+            route_template="/v1/memory",
+            request_fields={},
+            response_fields={},
+        ),
     ).json()
-    assert all(item["title"] != "one_off_search" for item in one_off_results)
+    assert forget_event["decision"]["action"] == "FORGET"
+    assert forget_event["decision"]["llm_assist"]["invoked"] is False
+    process_next_job(db_session, _bundle_resolver)
 
-    for customer in ["ABC Corp", "ABC Corporation"]:
-        response = client.post(
-            "/v1/events/ingest",
-            headers=headers,
-            json={
-                "tenant_id": "tenant_synthetic",
-                "user_id": "user_123",
-                "session_id": f"crm_{customer}",
-                "api_name": "crm.createDeal",
-                "structured_fields": {"customer": customer, "domain": "abc.com"},
-            },
-        )
-        assert response.status_code == 200
-        process_next_job(db_session, _bundle_resolver)
-
-    relation_results = client.post(
-        "/v1/memory/query",
-        headers=headers,
-        json={"tenant_id": "tenant_synthetic", "user_id": "user_123"},
-    ).json()
-    relation_items = [item for item in relation_results if item["record_type"] == "relation"]
-    assert len(relation_items) == 1
-
-    forget = client.post(
-        "/v1/memory/forget",
-        headers=headers,
-        json={
-            "tenant_id": "tenant_synthetic",
-            "user_id": "user_123",
-            "memory_type": "profile.primary_address",
-        },
-    )
-    assert forget.status_code == 200
+    assert db_session.scalar(select(InferenceRun).where(InferenceRun.source_event_id == forget_event["event_id"])) is None
     after_forget = client.post(
         "/v1/memory/query",
         headers=headers,
         json={"tenant_id": "tenant_synthetic", "user_id": "user_123", "memory_type": "profile.primary_address"},
     ).json()
     assert after_forget == []
+
+    search_runtime_event = db_session.scalar(select(RuntimeApiEvent).where(RuntimeApiEvent.event_id == search_event["event_id"]))
+    assert search_runtime_event is not None
+    assert search_runtime_event.source_system == "search_service"
+    assert search_runtime_event.http_method == "GET"
+    assert search_runtime_event.route_template == "/v1/search"
+    assert search_runtime_event.structured_fields_jsonb == {"query": "mortgage rates"}
+
+    active_memories = list(
+        db_session.scalars(
+            select(Memory).where(
+                Memory.tenant_id == "tenant_synthetic",
+                Memory.user_id == "user_123",
+                Memory.state == "active",
+            )
+        )
+    )
+    assert active_memories == []

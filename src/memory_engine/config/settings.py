@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     )
     worker_poll_seconds: int = 2
     embedding_provider: Literal["disabled", "hash", "openai"] = "hash"
+    inference_provider: Literal["disabled", "stub"] = "stub"
     embedding_dimensions: int = 8
     openai_api_key: str | None = None
     openai_embedding_model: str = "text-embedding-3-small"

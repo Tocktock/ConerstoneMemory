@@ -64,6 +64,10 @@ export interface SimulationRun {
   beforeDecision: string;
   afterDecision: string;
   reasonCodes: string[];
+  inferenceInvoked?: boolean;
+  modelRecommendation?: string | null;
+  modelConfidence?: number | null;
+  policyOverride?: string | null;
   activeSnapshotId?: string | null;
   candidateSnapshotId?: string | null;
   changedMemoryCandidates?: string[];
@@ -119,6 +123,17 @@ export interface DecisionRecord {
   evidenceCount?: number;
   documentVersion?: string;
   documentKind?: string;
+  sourceSystem?: string;
+  httpMethod?: string;
+  routeTemplate?: string;
+  inferenceInvoked?: boolean;
+  inferenceProvider?: string | null;
+  modelName?: string | null;
+  promptTemplateKey?: string | null;
+  promptVersion?: string | null;
+  modelRecommendation?: string | null;
+  modelConfidence?: number | null;
+  reasoningSummary?: string | null;
   timestamp: string;
 }
 

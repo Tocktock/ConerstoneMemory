@@ -809,7 +809,18 @@ export function SimulationWorkspace() {
                   <div className="grid gap-3 md:grid-cols-3">
                     <Metric label="Before" value={current.beforeDecision} hint="Baseline runtime behavior" />
                     <Metric label="After" value={current.afterDecision} hint="Expected with current config" />
-                    <Metric label="Reason codes" value={String(current.reasonCodes.length)} hint="Explanation tokens" />
+                    <Metric
+                      label="Model"
+                      value={
+                        current.inferenceInvoked
+                          ? joinItems([
+                              current.modelRecommendation ?? "n/a",
+                              current.modelConfidence != null ? current.modelConfidence.toFixed(2) : null,
+                            ])
+                          : "not invoked"
+                      }
+                      hint="Recommendation and confidence"
+                    />
                   </div>
                   <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
                     <Card className="space-y-3">
@@ -825,6 +836,12 @@ export function SimulationWorkspace() {
                           </div>
                         ))}
                       </div>
+                      {current.policyOverride ? (
+                        <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
+                          <div className="label">Final policy override</div>
+                          <div className="mt-1 text-white">{current.policyOverride}</div>
+                        </div>
+                      ) : null}
                       {current.changedMemoryCandidates?.length ? (
                         <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
                           <div className="label">Memory candidates</div>
@@ -1186,7 +1203,15 @@ export function DecisionExplorerWorkspace() {
                   <div>
                     <div className="font-medium text-white">{decision.title}</div>
                     <div className="mt-1 text-xs text-slate-400">
-                      {joinItems([decision.action, decision.kind ?? null, decision.scope, decision.tenant, decision.environment])}
+                      {joinItems([
+                        decision.action,
+                        decision.sourceSystem ?? null,
+                        decision.httpMethod ?? null,
+                        decision.routeTemplate ?? null,
+                        decision.scope,
+                        decision.tenant,
+                        decision.environment,
+                      ])}
                     </div>
                   </div>
                   <Badge tone={statusTone(decision.status)}>{decision.status}</Badge>
@@ -1208,11 +1233,28 @@ export function DecisionExplorerWorkspace() {
                     {decision.evidenceCount ? <div className="mt-2 text-xs text-slate-400">{decision.evidenceCount} evidence item(s)</div> : null}
                   </div>
                   <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
-                    <div className="label">Scope / tenant</div>
-                    <div className="mt-1 text-sm text-white">{joinItems([decision.scope, decision.tenant, decision.environment])}</div>
-                    <div className="mt-2 text-xs text-slate-400">{decision.documentKind ?? "runtime decision"}</div>
+                    <div className="label">Inference</div>
+                    <div className="mt-1 text-sm text-white">
+                      {decision.inferenceInvoked
+                        ? joinItems([
+                            decision.inferenceProvider ?? null,
+                            decision.modelName ?? null,
+                            decision.modelRecommendation ?? null,
+                            decision.modelConfidence != null ? decision.modelConfidence.toFixed(2) : null,
+                          ])
+                        : "not invoked"}
+                    </div>
+                    <div className="mt-2 text-xs text-slate-400">
+                      {joinItems([decision.promptTemplateKey ?? null, decision.promptVersion ?? null, decision.documentKind ?? "runtime decision"])}
+                    </div>
                   </div>
                 </div>
+                {decision.reasoningSummary ? (
+                  <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
+                    <div className="label">Reasoning summary</div>
+                    <div className="mt-1 text-sm text-white">{decision.reasoningSummary}</div>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>

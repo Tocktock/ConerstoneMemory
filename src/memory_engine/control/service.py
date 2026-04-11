@@ -32,6 +32,7 @@ from memory_engine.db.models import AuditLog, ConfigDocument, ConfigPublication,
 from memory_engine.id_utils import new_id, utcnow
 from memory_engine.ops.metrics import increment_metric
 from memory_engine.runtime.extractors import EXTRACTOR_REGISTRY
+from memory_engine.runtime.prompts import get_prompt_template
 
 
 KIND_ALIASES = {
@@ -256,8 +257,22 @@ def validate_definition(
                         code="precedence.unknown",
                         message=f"Unknown source_precedence_key: {entry.source_precedence_key}",
                         document_id=None,
+                        )
                     )
-                )
+            if entry.llm_usage_mode != "DISABLED" and entry.prompt_template_key:
+                try:
+                    get_prompt_template(entry.prompt_template_key)
+                except ValueError:
+                    issues.append(
+                        ValidationIssue(
+                            id=new_id("validation"),
+                            severity="error",
+                            path=f"entries.{entry.api_name}.prompt_template_key",
+                            code="prompt_template.unknown",
+                            message=f"Unknown prompt_template_key: {entry.prompt_template_key}",
+                            document_id=None,
+                        )
+                    )
     if kind == "memory_ontology" and policy_definition:
         ceilings = (
             PolicyProfileDefinition.model_validate(policy_definition)

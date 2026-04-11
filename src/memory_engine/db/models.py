@@ -96,16 +96,48 @@ class RuntimeApiEvent(Base):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    source_system: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     api_name: Mapped[str] = mapped_column(String(255), index=True)
+    http_method: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    route_template: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    source_channel: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     capability_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     request_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_fields_jsonb: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    response_fields_jsonb: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    request_artifact_jsonb: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    response_artifact_jsonb: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    redaction_policy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     structured_fields_jsonb: Mapped[dict] = mapped_column(JSONB, nullable=False)
     decision_jsonb: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     config_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InferenceRun(Base):
+    __tablename__ = "inference_runs"
+    __table_args__ = {"schema": "runtime"}
+
+    inference_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_event_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    config_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    model_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_template_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    llm_recommendation: Mapped[str] = mapped_column(String(32), nullable=False)
+    llm_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    llm_reasoning_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidate_jsonb: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    final_action: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class SignalCounter(Base):

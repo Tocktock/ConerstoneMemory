@@ -88,3 +88,21 @@ def test_forget_memories_only_deletes_relations_for_target_user(db_session) -> N
     assert result["relations"] == 1
     assert deleted_relation is not None and deleted_relation.state == "deleted"
     assert untouched_relation is not None and untouched_relation.state == "active"
+
+
+def test_old_ingest_payload_shape_is_rejected(client) -> None:
+    login = client.post("/v1/auth/login", json={"email": "editor@memoryengine.local", "password": "editor"})
+    token = login.json()["token"]
+    response = client.post(
+        "/v1/events/ingest",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "tenant_id": "tenant_test",
+            "user_id": "user_test",
+            "api_name": "profile.updateAddress",
+            "structured_fields": {"address": "123 Seongsu-ro"},
+            "request_summary": "legacy request",
+            "response_summary": "legacy response",
+        },
+    )
+    assert response.status_code == 422

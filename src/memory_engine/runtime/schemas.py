@@ -3,18 +3,46 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ArtifactRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str
+    checksum_sha256: str | None = None
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
+class EventPayloadSide(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str | None = None
+    selected_fields: dict[str, Any] = Field(default_factory=dict)
+    artifact_ref: ArtifactRef | None = None
+
+
+class EventResponseSide(EventPayloadSide):
+    status_code: int | None = None
 
 
 class EventIngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tenant_id: str
     user_id: str
     session_id: str | None = None
-    api_name: str
-    structured_fields: dict[str, Any] = Field(default_factory=dict)
-    request_summary: str | None = None
-    response_summary: str | None = None
     occurred_at: datetime | None = None
+    source_system: str
+    api_name: str
+    http_method: str
+    route_template: str
+    request_id: str | None = None
+    trace_id: str | None = None
+    source_channel: str | None = None
+    redaction_policy_version: str | None = None
+    request: EventPayloadSide
+    response: EventResponseSide
 
 
 class CandidateMemory(BaseModel):
@@ -32,6 +60,18 @@ class CandidateMemory(BaseModel):
     source_precedence_score: int
 
 
+class LLMAssistSummary(BaseModel):
+    invoked: bool
+    inference_id: str | None = None
+    provider: str | None = None
+    model_name: str | None = None
+    prompt_template_key: str | None = None
+    prompt_version: str | None = None
+    recommendation: str | None = None
+    confidence: float | None = None
+    reasoning_summary: str | None = None
+
+
 class DecisionEnvelope(BaseModel):
     config_snapshot_id: str | None
     event_id: str
@@ -39,6 +79,7 @@ class DecisionEnvelope(BaseModel):
     reason_codes: list[str]
     candidates: list[CandidateMemory]
     repeat_score: float = 0.0
+    llm_assist: LLMAssistSummary = Field(default_factory=lambda: LLMAssistSummary(invoked=False))
 
 
 class MemoryQueryRequest(BaseModel):
