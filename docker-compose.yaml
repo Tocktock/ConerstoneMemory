@@ -28,6 +28,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     ports:
       - "8001:8000"
 
@@ -40,9 +45,11 @@ services:
       MEMORYENGINE_AUTH_SECRET: dev-secret-change-me
       MEMORYENGINE_ENVIRONMENT: dev
       MEMORYENGINE_EMBEDDING_PROVIDER: hash
-    command: ["sh", "-c", "uv run python scripts/bootstrap_db.py && uv run alembic upgrade head && uv run python -m apps.worker.main"]
+    command: ["sh", "-c", "uv run python -m apps.worker.main"]
     depends_on:
       postgres:
+        condition: service_healthy
+      api:
         condition: service_healthy
 
   web:
@@ -53,7 +60,7 @@ services:
       NEXT_PUBLIC_MEMORYENGINE_API_BASE_URL: http://localhost:8001
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "3000:3000"
 

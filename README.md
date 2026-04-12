@@ -18,3 +18,9 @@ Local run:
 - `./run.sh` starts the full Docker Compose stack and prints the local URLs.
 - `./run.sh logs api` tails one service.
 - `./run.sh down` stops the stack.
+
+Verification:
+
+- `.venv/bin/python scripts/verify_compose_readonly.py` checks the live Compose web and API surfaces without mutating runtime data.
+- Integration tests use `MEMORYENGINE_TEST_DATABASE_URL` and default to `postgresql+psycopg://memoryengine:memoryengine@localhost:5433/memoryengine_test`.
+- Keep the test database separate from the Compose application database; the test harness intentionally drops and recreates schemas.
