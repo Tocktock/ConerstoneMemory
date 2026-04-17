@@ -945,11 +945,13 @@ export function PublicationWorkspace() {
               <div className="space-y-2">
                 {currentSnapshots.map((snapshot) => (
                   <div key={snapshot.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="font-medium text-white">{snapshot.apiOntology.name}</div>
-                      <Badge tone={statusTone(snapshot.status)}>{snapshot.status}</Badge>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1 break-words font-medium text-white">{snapshot.apiOntology.name}</div>
+                      <Badge tone={statusTone(snapshot.status)} className="shrink-0">
+                        {snapshot.status}
+                      </Badge>
                     </div>
-                    <div className="mt-2 text-xs text-slate-400">{joinItems([snapshot.scope, snapshot.tenant ?? "all", snapshot.environment, timestamp(snapshot.publishedAt)])}</div>
+                    <div className="mt-2 break-words text-xs text-slate-400">{joinItems([snapshot.scope, snapshot.tenant ?? "all", snapshot.environment, timestamp(snapshot.publishedAt)])}</div>
                   </div>
                 ))}
               </div>
@@ -967,14 +969,16 @@ export function PublicationWorkspace() {
                 <div className="space-y-2">
                   {currentSnapshots.map((snapshot) => (
                     <div key={snapshot.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="space-y-1">
-                          <div className="font-medium text-white">{snapshot.releaseNotes || "No release notes"}</div>
-                          <div className="text-xs text-slate-400">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="break-words font-medium text-white">{snapshot.releaseNotes || "No release notes"}</div>
+                          <div className="break-words text-xs text-slate-400">
                             {snapshot.publishedBy} · {timestamp(snapshot.publishedAt)}
                           </div>
                         </div>
-                        <Badge tone={statusTone(snapshot.status)}>{snapshot.status}</Badge>
+                        <Badge tone={statusTone(snapshot.status)} className="shrink-0">
+                          {snapshot.status}
+                        </Badge>
                       </div>
                       <div className="mt-3 grid gap-3 md:grid-cols-3">
                         <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
@@ -1064,11 +1068,13 @@ export function RollbackWorkspace() {
                       selectedSnapshot?.id === snapshot.id ? "border-cyan-300/30 bg-cyan-400/10" : "border-white/10 bg-white/5 hover:bg-white/8",
                     )}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="font-medium text-white">{snapshot.apiOntology.name}</div>
-                      <Badge tone={statusTone(snapshot.status)}>{snapshot.status}</Badge>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1 break-words font-medium text-white">{snapshot.apiOntology.name}</div>
+                      <Badge tone={statusTone(snapshot.status)} className="shrink-0">
+                        {snapshot.status}
+                      </Badge>
                     </div>
-                    <div className="mt-1 text-xs text-slate-400">{joinItems([snapshot.scope, snapshot.environment, timestamp(snapshot.publishedAt)])}</div>
+                    <div className="mt-1 break-words text-xs text-slate-400">{joinItems([snapshot.scope, snapshot.environment, timestamp(snapshot.publishedAt)])}</div>
                   </button>
                 ))}
               </div>
@@ -1173,7 +1179,7 @@ export function DecisionExplorerWorkspace() {
         <StateCard title="Loading decisions" body="Fetching live decision rows from the backend." />
       ) : (
         <Card className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-6">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <Input placeholder="Scope" value={filters.scope} onChange={(event) => setFilters({ ...filters, scope: event.target.value })} />
             <Input placeholder="Tenant" value={filters.tenant} onChange={(event) => setFilters({ ...filters, tenant: event.target.value })} />
             <Input placeholder="Environment" value={filters.environment} onChange={(event) => setFilters({ ...filters, environment: event.target.value })} />
@@ -1199,10 +1205,10 @@ export function DecisionExplorerWorkspace() {
           <div className="space-y-2">
             {decisions.map((decision) => (
               <div key={decision.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="font-medium text-white">{decision.title}</div>
-                    <div className="mt-1 text-xs text-slate-400">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="break-words font-medium text-white">{decision.title}</div>
+                    <div className="mt-1 break-words text-xs text-slate-400">
                       {joinItems([
                         decision.action,
                         decision.sourceSystem ?? null,
@@ -1214,7 +1220,9 @@ export function DecisionExplorerWorkspace() {
                       ])}
                     </div>
                   </div>
-                  <Badge tone={statusTone(decision.status)}>{decision.status}</Badge>
+                  <Badge tone={statusTone(decision.status)} className="shrink-0">
+                    {decision.status}
+                  </Badge>
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-4">
                   <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
@@ -1340,14 +1348,16 @@ export function MemoryBrowserWorkspace() {
           <div className="space-y-2">
             {memories.map((memory) => (
               <div key={memory.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="font-medium text-white">{memory.title}</div>
-                    <div className="mt-1 text-xs text-slate-400">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="break-words font-medium text-white">{memory.title}</div>
+                    <div className="mt-1 break-words text-xs text-slate-400">
                       {joinItems([memory.type, memory.scope, memory.tenant, memory.environment, timestamp(memory.timestamp)])}
                     </div>
                   </div>
-                  <Badge tone={statusTone(memory.status)}>{memory.status}</Badge>
+                  <Badge tone={statusTone(memory.status)} className="shrink-0">
+                    {memory.status}
+                  </Badge>
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-4">
                   <div className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-300">
@@ -1419,7 +1429,7 @@ export function AuditLogWorkspace() {
         <StateCard title="Loading audit log" body="Fetching live audit rows from the backend." />
       ) : (
         <Card className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-6">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <Input placeholder="Scope" value={filters.scope} onChange={(event) => setFilters({ ...filters, scope: event.target.value })} />
             <Input placeholder="Tenant" value={filters.tenant} onChange={(event) => setFilters({ ...filters, tenant: event.target.value })} />
             <Input placeholder="Environment" value={filters.environment} onChange={(event) => setFilters({ ...filters, environment: event.target.value })} />
@@ -1442,8 +1452,8 @@ export function AuditLogWorkspace() {
             <Metric label="Validations" value={String(records.filter((item) => item.action === "validate").length)} hint="Validation runs" />
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-white/10">
-            <table className="min-w-full divide-y divide-white/10 text-left text-sm">
+          <div className="overflow-x-auto rounded-2xl border border-white/10">
+            <table className="min-w-[960px] divide-y divide-white/10 text-left text-sm">
               <thead className="bg-white/5 text-xs uppercase tracking-[0.18em] text-slate-400">
                 <tr>
                   <th className="px-4 py-3">Actor</th>

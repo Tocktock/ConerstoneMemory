@@ -24,7 +24,7 @@ export function Button({
     <button
       {...props}
       className={mergeClassNames(
-        "inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition",
+        "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-full px-4 py-2.5 text-center text-[15px] font-semibold leading-tight whitespace-normal transition sm:min-h-10 sm:py-2 sm:text-sm",
         "focus:outline-none focus:ring-2 focus:ring-cyan-300/60 focus:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-60",
         styles,
         className,
@@ -52,7 +52,7 @@ export function Badge({
     accent: "bg-cyan-400/12 text-cyan-100 border-cyan-300/20",
   }[tone];
 
-  return <span className={mergeClassNames("inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold", styles, className)}>{children}</span>;
+  return <span className={mergeClassNames("inline-flex max-w-full rounded-full border px-2.5 py-1 text-xs font-semibold whitespace-normal", styles, className)}>{children}</span>;
 }
 
 export function Card({
@@ -78,7 +78,7 @@ export function Section({
 }) {
   return (
     <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
         <div className="space-y-1">
           {eyebrow ? <div className="label">{eyebrow}</div> : null}
           <h2 className="text-lg font-semibold text-white">{title}</h2>
@@ -95,7 +95,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={mergeClassNames(
-        "w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-white placeholder:text-slate-500",
+        "w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 text-base text-white placeholder:text-slate-500 sm:py-2 sm:text-sm",
         "focus:border-cyan-300 focus:outline-none focus:ring-2 focus:ring-cyan-300/30",
         props.className,
       )}
@@ -108,7 +108,7 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
     <textarea
       {...props}
       className={mergeClassNames(
-        "min-h-40 w-full rounded-2xl border border-white/10 bg-slate-950/50 px-3 py-3 font-mono text-sm text-slate-100 placeholder:text-slate-500",
+        "min-h-40 w-full resize-y rounded-2xl border border-white/10 bg-slate-950/50 px-3 py-3 font-mono text-base leading-6 text-slate-100 placeholder:text-slate-500 sm:text-sm",
         "focus:border-cyan-300 focus:outline-none focus:ring-2 focus:ring-cyan-300/30",
         props.className,
       )}
@@ -121,7 +121,7 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
     <select
       {...props}
       className={mergeClassNames(
-        "w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-white",
+        "w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 text-base text-white sm:py-2 sm:text-sm",
         "focus:border-cyan-300 focus:outline-none focus:ring-2 focus:ring-cyan-300/30",
         props.className,
       )}
@@ -147,9 +147,9 @@ export function Metric({
   hint?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+    <div className="min-w-0 rounded-2xl border border-white/10 bg-white/5 p-4">
       <div className="label">{label}</div>
-      <div className="mt-2 text-2xl font-semibold text-white">{value}</div>
+      <div className="mt-2 break-words text-xl font-semibold text-white sm:text-2xl">{value}</div>
       {hint ? <div className="mt-1 text-xs text-slate-400">{hint}</div> : null}
     </div>
   );

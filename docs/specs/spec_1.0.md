@@ -1655,6 +1655,15 @@ The final v1 design is:
 
 ---
 
+The control plane UI must also remain usable across phone, tablet, laptop, and desktop widths:
+
+* primary workspace content must stay reachable without scrolling through a full-height navigation rail first
+* navigation may collapse into a drawer or compact menu on smaller viewports, but operators must still be able to switch sections without losing context
+* multi-panel authoring layouts must not collapse into unreadable narrow columns at intermediate widths; nested side rails should stack before fields or action buttons become unusable
+* mobile form controls must keep editable text at a readable touch-safe size and avoid sub-16px input text that triggers browser focus zoom
+* stacked mobile actions must keep touch targets at or above common 44px minimums, and labels must scale with the surrounding component density
+* dense tables and audit views must preserve access to all columns on smaller screens via responsive stacking or horizontal scrolling
+
 ## Confidence
 
 0.96
