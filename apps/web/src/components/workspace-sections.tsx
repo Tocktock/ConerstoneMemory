@@ -13,7 +13,7 @@ import type {
   SimulationRun,
   ValidationRun,
 } from "@/lib/api/types";
-import { Badge, Button, Card, CodeBlock, Input, Label, Metric, Select, Section, Textarea, cx } from "@/components/ui";
+import { Badge, Button, Card, CodeBlock, ConsolePageHeader, EmptyState, Input, Label, Metric, Select, Section, Textarea, cx } from "@/components/ui";
 
 type EditorFormat = "yaml" | "json";
 
@@ -589,6 +589,7 @@ export function ValidationWorkspace() {
   const [current, setCurrent] = useState<ValidationRun | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -624,115 +625,251 @@ export function ValidationWorkspace() {
     setCurrent(validations.find((item) => item.documentId === selectedId) ?? null);
   }, [selectedId, validations]);
 
+  const selectedConfig = useMemo(
+    () => configs.find((doc) => doc.id === selectedId) ?? null,
+    [configs, selectedId],
+  );
+  const validationByDocumentId = useMemo(
+    () => new Map(validations.map((run) => [run.documentId, run])),
+    [validations],
+  );
+  const documentHealth = useMemo(
+    () =>
+      configs.map((doc) => ({
+        doc,
+        run: validationByDocumentId.get(doc.id) ?? null,
+      })),
+    [configs, validationByDocumentId],
+  );
+  const selectedStatusTone = current ? statusTone(current.status) : "neutral";
+  const selectedStatusLabel = current ? current.status : "not run";
+  const selectedMeta = selectedConfig
+    ? joinItems([
+        selectedConfig.kind,
+        selectedConfig.scope,
+        selectedConfig.tenant,
+        selectedConfig.environment,
+      ])
+    : null;
+
   const runValidation = async () => {
     if (!selectedId) return;
-    const result = await client.configs.validate(selectedId);
-    setCurrent(result);
-    await refresh();
+    setRunning(true);
+    setError("");
+    try {
+      const result = await client.configs.validate(selectedId);
+      setValidations((previous) => [result, ...previous.filter((item) => item.documentId !== selectedId)]);
+      setCurrent(result);
+    } catch (requestError) {
+      setError(formatError(requestError));
+    } finally {
+      setRunning(false);
+    }
   };
 
   return (
-    <Section eyebrow="Validation" title="Validation results" action={<Button onClick={runValidation}>Run validation</Button>}>
+    <div className="space-y-4">
+      <ConsolePageHeader
+        eyebrow="Validation"
+        title={selectedConfig?.name ?? "Validation review"}
+        description={
+          selectedConfig
+            ? "Review whether the selected document is ready for approval or publication. Keep one target in focus, then interpret its checks and blocking issues."
+            : "Select a config document first. Validation is the operator review surface for schema, lifecycle, and safety checks before publish-time actions."
+        }
+        status={<Badge tone={selectedStatusTone}>{selectedStatusLabel}</Badge>}
+        actions={
+          <Button onClick={runValidation} disabled={!selectedId || running}>
+            {running ? "Running validation..." : "Run validation"}
+          </Button>
+        }
+        meta={
+          <>
+            <Badge>{selectedMeta ?? "No document selected"}</Badge>
+            <Badge>{current ? `Last run ${timestamp(current.timestamp)}` : "No recorded validation run"}</Badge>
+            {current?.issues.length ? (
+              <Badge tone="danger">{current.issues.length} issue(s) require attention</Badge>
+            ) : selectedConfig && current ? (
+              <Badge tone="success">No blocking issues detected</Badge>
+            ) : null}
+          </>
+        }
+      />
+
       {error ? (
         <StateCard title="Validation data unavailable" body={error} action={<Button onClick={() => void refresh()}>Retry</Button>} />
       ) : loading ? (
         <StateCard title="Loading validations" body="Fetching config documents and validation runs from the backend." />
       ) : (
-        <Card className="space-y-4">
-          <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-            <div className="space-y-3">
-              <div className="label">Documents</div>
-              <Select value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>
-                <option value="">Select a config document</option>
-                {configs.map((doc) => (
-                  <option key={doc.id} value={doc.id}>
-                    {doc.name} · {doc.scope} · {doc.tenant}
-                  </option>
-                ))}
-              </Select>
-              <div className="space-y-2">
-                {validations.map((run) => (
-                  <button
-                    key={run.id}
-                    onClick={() => setCurrent(run)}
-                    className={cx(
-                      "w-full rounded-2xl border px-4 py-3 text-left transition",
-                      current?.id === run.id ? "border-cyan-300/30 bg-cyan-400/10" : "border-white/10 bg-white/5 hover:bg-white/8",
-                    )}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="font-medium text-white">{run.documentName}</div>
-                      <Badge tone={statusTone(run.status)}>{run.status}</Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-slate-400">{timestamp(run.timestamp)}</div>
-                  </button>
-                ))}
-              </div>
+        <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]">
+          <Card className="space-y-4">
+            <div className="space-y-2">
+              <div className="label">Validation target</div>
+              <p className="text-sm leading-6 text-slate-300">
+                Choose one config document from the health list, then inspect its current readiness before approval or publication.
+              </p>
+              <p className="text-xs leading-5 text-slate-500">
+                The selected document controls both the current summary and the next validation run.
+              </p>
             </div>
 
-            <div className="space-y-4">
-              {selectedId ? (
-                <>
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <Metric label="Result" value={current ? current.status.toUpperCase() : "PENDING"} hint={current?.summary ?? "Run validation to inspect the selected document."} />
-                    <Metric label="Checks" value={String(current?.checks.length ?? 0)} hint="Schema, lifecycle, safety" />
-                    <Metric label="Issues" value={String(current?.issues.length ?? 0)} hint="Blocking concerns" />
-                  </div>
+            {selectedConfig ? (
+              <div className="panel-inset space-y-2 p-4 text-sm text-slate-300">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium text-white">{selectedConfig.name}</div>
+                  <Badge tone={selectedStatusTone}>{selectedStatusLabel}</Badge>
+                </div>
+                <div className="text-xs leading-5 text-slate-400">{selectedMeta}</div>
+                <div className="text-xs leading-5 text-slate-400">
+                  {current ? current.summary : "No recorded validation run for the selected document yet."}
+                </div>
+              </div>
+            ) : (
+              <EmptyState
+                eyebrow="No target"
+                title="Select a config document"
+                body="Validation needs one document in focus. Pick API Ontology, Memory Ontology, or Policy Profile content before running checks."
+              />
+            )}
 
-                  <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-                    <Card className="space-y-3">
-                      <div className="label">Selected config</div>
-                      {configs.find((doc) => doc.id === selectedId) ? (
-                        <div className="space-y-2 text-sm text-slate-300">
-                          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                            <div className="font-medium text-white">{configs.find((doc) => doc.id === selectedId)?.name}</div>
-                            <div className="mt-1 text-xs text-slate-400">
-                              {joinItems([
-                                configs.find((doc) => doc.id === selectedId)?.kind,
-                                configs.find((doc) => doc.id === selectedId)?.scope,
-                                configs.find((doc) => doc.id === selectedId)?.tenant,
-                                configs.find((doc) => doc.id === selectedId)?.environment,
-                              ])}
-                            </div>
+            <div className="space-y-3">
+              <div className="label">Document health</div>
+              <div className="space-y-2">
+                {documentHealth.map(({ doc, run }) => {
+                  const active = doc.id === selectedId;
+                  return (
+                    <button
+                      key={doc.id}
+                      onClick={() => {
+                        setSelectedId(doc.id);
+                        setCurrent(run);
+                      }}
+                      className={cx(
+                        "w-full rounded-2xl border px-4 py-3 text-left transition",
+                        active
+                          ? "border-[color:var(--color-line-strong)] bg-[color:var(--color-card-accent)]"
+                          : "border-[color:var(--color-line-subtle)] bg-[color:var(--color-card-inset)] hover:border-[color:var(--color-line)] hover:bg-white/5",
+                      )}
+                    >
+                      <div className="flex min-w-0 items-start gap-3 overflow-hidden">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-white" title={doc.name}>
+                            {doc.name}
+                          </div>
+                          <div className="mt-1 truncate text-xs text-slate-400" title={joinItems([doc.kind, doc.scope, doc.tenant])}>
+                            {joinItems([doc.kind, doc.scope, doc.tenant])}
                           </div>
                         </div>
-                      ) : null}
-                      <div className="space-y-2">
-                        {current?.checks.map((check) => (
-                          <div key={check.name} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="font-medium text-white">{check.name}</div>
-                              <Badge tone={statusTone(check.status)}>{check.status}</Badge>
-                            </div>
-                            <div className="mt-2 text-sm text-slate-300">{check.detail}</div>
+                        <Badge className="shrink-0" tone={run ? statusTone(run.status) : "neutral"}>
+                          {run ? run.status : "not run"}
+                        </Badge>
+                      </div>
+                      <div className="mt-2 text-xs leading-5 text-slate-400">
+                        {run ? `${timestamp(run.timestamp)} · ${run.summary}` : "No validation recorded yet."}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </Card>
+
+          <div className="space-y-4">
+            {selectedConfig ? (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <Metric
+                    label="Result"
+                    value={current ? current.status.toUpperCase() : "NOT RUN"}
+                    hint={current?.summary ?? "Run validation to inspect the selected document."}
+                  />
+                  <Metric
+                    label="Checks"
+                    value={String(current?.checks.length ?? 0)}
+                    hint="Schema, lifecycle, and safety checks returned for this document."
+                  />
+                  <Metric
+                    label="Issues"
+                    value={String(current?.issues.length ?? 0)}
+                    hint="Blocking or actionable concerns that need operator review."
+                  />
+                  <Metric
+                    label="Last Run"
+                    value={current ? timestamp(current.timestamp) : "Not run"}
+                    hint="Most recent validation result for the selected document."
+                  />
+                </div>
+
+                {current ? (
+                  <>
+                    <Card className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="label">Result summary</div>
+                          <div className="mt-2 text-lg font-semibold text-white">{current.summary}</div>
+                        </div>
+                        <Badge tone={selectedStatusTone}>{selectedStatusLabel}</Badge>
+                      </div>
+                      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
+                        <div className="space-y-3">
+                          <div className="label">Checks</div>
+                          <div className="space-y-2">
+                            {current.checks.map((check) => (
+                              <div key={check.name} className="panel-inset space-y-3 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="font-medium text-white">{check.name}</div>
+                                  <Badge tone={statusTone(check.status)}>{check.status}</Badge>
+                                </div>
+                                <div className="text-sm leading-6 text-slate-300">{check.detail}</div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        </div>
+                        <Card className="space-y-3">
+                          <div className="label">Issues</div>
+                          {current.issues.length ? (
+                            <ul className="space-y-2 text-sm text-rose-100">
+                              {current.issues.map((issue) => (
+                                <li key={issue} className="rounded-xl border border-rose-300/20 bg-rose-400/10 p-3 leading-6">
+                                  {issue}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <EmptyState
+                              eyebrow="No blockers"
+                              title="No validation issues detected"
+                              body="The current validation result did not report any actionable warnings or failures for the selected document."
+                            />
+                          )}
+                        </Card>
                       </div>
                     </Card>
-                    <Card className="space-y-3">
-                      <div className="label">Issues</div>
-                      {current?.issues.length ? (
-                        <ul className="space-y-2 text-sm text-rose-100">
-                          {current.issues.map((issue) => (
-                            <li key={issue} className="rounded-xl border border-rose-300/20 bg-rose-400/10 p-3">
-                              {issue}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-slate-400">No validation issues detected.</p>
-                      )}
-                    </Card>
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-slate-400">Pick a document and run validation to inspect the result.</p>
-              )}
-            </div>
+                  </>
+                ) : (
+                  <EmptyState
+                    eyebrow="No result"
+                    title="Run validation for this document"
+                    body="The selected document is in focus, but there is no recorded validation result yet. Run validation to populate checks, issues, and the current readiness summary."
+                    action={
+                      <Button onClick={runValidation} disabled={running}>
+                        {running ? "Running validation..." : "Run validation"}
+                      </Button>
+                    }
+                  />
+                )}
+              </>
+            ) : (
+              <EmptyState
+                eyebrow="No selection"
+                title="Pick a document to begin"
+                body="Validation review is document-specific. Select a config document on the left to see its current readiness, issues, and check details."
+              />
+            )}
           </div>
-        </Card>
+        </div>
       )}
-    </Section>
+    </div>
   );
 }
 

@@ -1281,6 +1281,12 @@ The frontend is an **operator console**, not an end-user app.
 
 ### 16.4 UI Design Direction
 
+The control plane UI shall use the following frontend foundation rules:
+
+* GitHub Primer is the design standard for shell hierarchy, navigation, forms, tables, dialogs, and status communication.
+* `shadcn/ui` is the shared React UI foundation for control-plane primitives and composed workflows; new console components should extend or wrap that foundation instead of introducing parallel ad hoc primitives.
+* Tailwind CSS is the code-level consistency enforcement layer for layout, spacing, typography, color, responsive behavior, and state styling; page-local custom CSS should be exceptional and justified.
+
 Use Tailwind CSS for a dense admin interface with clear states for:
 
 * draft
@@ -1291,6 +1297,15 @@ Use Tailwind CSS for a dense admin interface with clear states for:
 * overridden
 * blocked
 * conflicted
+
+The control plane UI must also remain usable across phone, tablet, laptop, and desktop widths:
+
+* primary workspace content must stay reachable without scrolling through a full-height navigation rail first
+* navigation may collapse into a drawer or compact menu on smaller viewports, but operators must still be able to switch sections without losing context
+* multi-panel authoring layouts must not collapse into unreadable narrow columns at intermediate widths; nested side rails should stack before fields or action buttons become unusable
+* mobile form controls must keep editable text at a readable touch-safe size and avoid sub-16px input text that triggers browser focus zoom
+* stacked mobile actions must keep touch targets at or above common 44px minimums, and labels must scale with the surrounding component density
+* dense tables and audit views must preserve access to all columns on smaller screens via responsive stacking or horizontal scrolling
 
 ---
 

@@ -1,20 +1,29 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ink: #09111f;
-  --color-ink-soft: #0f1b31;
-  --color-panel: #111a2f;
-  --color-panel-strong: #18233d;
-  --color-line: rgba(148, 163, 184, 0.18);
-  --color-text: #e5eefc;
-  --color-muted: #93a4c3;
-  --color-accent: #7dd3fc;
-  --color-accent-strong: #38bdf8;
-  --color-success: #34d399;
-  --color-warning: #fbbf24;
-  --color-danger: #fb7185;
-  --color-surface: rgba(15, 23, 42, 0.72);
-  --shadow-panel: 0 20px 80px rgba(6, 11, 21, 0.45);
+  --color-canvas: #0d1117;
+  --color-canvas-subtle: #161b22;
+  --color-canvas-inset: #0f141b;
+  --color-sidebar: rgba(13, 17, 23, 0.92);
+  --color-card: rgba(22, 27, 34, 0.9);
+  --color-card-elevated: rgba(31, 38, 50, 0.96);
+  --color-card-muted: rgba(22, 27, 34, 0.72);
+  --color-card-inset: rgba(13, 17, 23, 0.76);
+  --color-card-accent: rgba(56, 139, 253, 0.12);
+  --color-card-danger: rgba(248, 81, 73, 0.12);
+  --color-line-subtle: rgba(99, 110, 123, 0.24);
+  --color-line: rgba(139, 148, 158, 0.34);
+  --color-line-strong: rgba(56, 139, 253, 0.42);
+  --color-text: #f0f6fc;
+  --color-muted: #9da7b3;
+  --color-subtle: #7d8590;
+  --color-accent: #58a6ff;
+  --color-accent-strong: #2f81f7;
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-danger: #f85149;
+  --shadow-panel: 0 24px 64px rgba(1, 4, 9, 0.42);
+  --shadow-raised: 0 16px 40px rgba(1, 4, 9, 0.28);
 }
 
 @layer base {
@@ -24,34 +33,69 @@
 
   body {
     min-height: 100vh;
+    font-family: var(--font-sans), sans-serif;
     background:
-      radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 28%),
-      radial-gradient(circle at top right, rgba(125, 211, 252, 0.12), transparent 24%),
-      linear-gradient(180deg, #020617 0%, #09111f 45%, #030712 100%);
+      radial-gradient(circle at top left, rgba(88, 166, 255, 0.14), transparent 26%),
+      radial-gradient(circle at top right, rgba(47, 129, 247, 0.11), transparent 22%),
+      linear-gradient(180deg, #0d1117 0%, #111827 44%, #0b1016 100%);
     color: var(--color-text);
   }
 
   * {
-    border-color: var(--color-line);
+    border-color: var(--color-line-subtle);
+  }
+
+  code,
+  pre {
+    font-family: var(--font-mono), monospace;
   }
 
   ::selection {
-    background: rgba(56, 189, 248, 0.32);
+    background: rgba(88, 166, 255, 0.32);
     color: white;
   }
 }
 
 @layer components {
   .panel {
-    @apply rounded-2xl border border-white/10 bg-white/5 shadow-2xl backdrop-blur-xl;
+    @apply rounded-2xl border backdrop-blur-xl;
+    border-color: var(--color-line);
+    background: linear-gradient(180deg, var(--color-card-elevated), var(--color-card));
     box-shadow: var(--shadow-panel);
   }
 
   .panel-strong {
-    @apply rounded-2xl border border-cyan-300/20 bg-[color:var(--color-panel)] shadow-2xl;
+    @apply rounded-3xl border;
+    border-color: var(--color-line);
+    background:
+      linear-gradient(180deg, rgba(18, 25, 35, 0.98), rgba(13, 17, 23, 0.96)),
+      linear-gradient(135deg, rgba(56, 139, 253, 0.1), transparent 35%);
+    box-shadow: var(--shadow-panel);
+  }
+
+  .panel-sidebar {
+    @apply rounded-3xl border backdrop-blur-xl;
+    border-color: var(--color-line);
+    background:
+      linear-gradient(180deg, rgba(18, 25, 35, 0.98), rgba(13, 17, 23, 0.96)),
+      linear-gradient(135deg, rgba(56, 139, 253, 0.08), transparent 38%);
+    box-shadow: var(--shadow-panel);
+  }
+
+  .panel-muted {
+    @apply rounded-2xl border;
+    border-color: var(--color-line-subtle);
+    background: var(--color-card-muted);
+    box-shadow: var(--shadow-raised);
+  }
+
+  .panel-inset {
+    @apply rounded-2xl border;
+    border-color: var(--color-line-subtle);
+    background: var(--color-card-inset);
   }
 
   .label {
-    @apply text-xs font-semibold uppercase tracking-[0.12em] text-slate-400 sm:text-[11px] sm:tracking-[0.18em];
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500;
   }
 }
