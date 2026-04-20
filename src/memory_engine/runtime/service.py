@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
+import hashlib
 import math
 from typing import Any
 
@@ -19,6 +20,7 @@ from memory_engine.db.models import (
     Evidence,
     Job,
     Memory,
+    MemoryEmbedding,
     Relation,
     RuntimeApiEvent,
     SignalCounter,
@@ -116,6 +118,66 @@ def _embedding_text(
     if sensitivity in {"S2_PERSONAL", "S3_CONFIDENTIAL", "S4_RESTRICTED"} and policy.embedding_rules.raw_sensitive_embedding_allowed:
         return None
     return text
+
+
+def _memory_embedding_text(memory: Memory) -> str | None:
+    clear_payload = _restored_memory_payload(memory)
+    return next(
+        (
+            str(item)
+            for item in [
+                clear_payload.get("summary"),
+                clear_payload.get("topic"),
+                clear_payload.get("canonical_customer_id"),
+                clear_payload.get("domain"),
+                clear_payload.get("city"),
+                clear_payload.get("country"),
+            ]
+            if item
+        ),
+        None,
+    )
+
+
+def _embedding_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _upsert_memory_embedding(
+    session: Session,
+    *,
+    memory: Memory,
+    embedding_text: str | None,
+    provider,
+) -> None:
+    if not embedding_text:
+        return
+    vector = provider.embed(embedding_text)
+    if vector is None:
+        return
+    existing = session.scalar(
+        select(MemoryEmbedding).where(
+            MemoryEmbedding.memory_id == memory.memory_id,
+            MemoryEmbedding.provider == provider.provider_name,
+            MemoryEmbedding.model_name == provider.model_name,
+        )
+    )
+    if existing is None:
+        session.add(
+            MemoryEmbedding(
+                memory_id=memory.memory_id,
+                provider=provider.provider_name,
+                model_name=provider.model_name,
+                dimensions=len(vector),
+                embedding=vector,
+                text_hash=_embedding_text_hash(embedding_text),
+            )
+        )
+        return
+    existing.dimensions = len(vector)
+    existing.embedding = vector
+    existing.text_hash = _embedding_text_hash(embedding_text)
+    existing.updated_at = utcnow()
 
 
 def _is_typo_correction(existing_memory: Memory, candidate, policy: PolicyProfileDefinition) -> bool:
@@ -225,6 +287,157 @@ def _attach_evidence(
     )
 
 
+def _persist_workflow_intent_memory(
+    session: Session,
+    *,
+    event: RuntimeApiEvent,
+    envelope: DecisionEnvelope,
+    ontology: dict[str, Any],
+    policy: PolicyProfileDefinition,
+    provider,
+    subject: Entity,
+) -> str | None:
+    if (
+        not envelope.workflow_key
+        or not envelope.intent_summary
+        or not envelope.intent_memory_type
+        or not envelope.candidates
+    ):
+        return None
+
+    memory_definition = ontology.get(envelope.intent_memory_type)
+    if memory_definition is None or not memory_definition.enabled:
+        return None
+    if memory_definition.cardinality != "ONE_ACTIVE":
+        return None
+
+    primary_candidate = max(
+        envelope.candidates,
+        key=lambda candidate: (candidate.source_precedence_score, candidate.confidence),
+    )
+    intent_sensitivity = max(
+        (candidate.sensitivity for candidate in envelope.candidates),
+        key=lambda level: SENSITIVITY_RANK[level],
+    )
+    if SENSITIVITY_RANK[intent_sensitivity] > SENSITIVITY_RANK[memory_definition.allowed_sensitivity]:
+        return None
+
+    related_api_ids = sorted(set(envelope.related_api_ids))
+    intent_payload = {
+        "summary": envelope.intent_summary,
+        "workflow_key": envelope.workflow_key,
+        "observed_api_name": event.api_name,
+        "related_api_ids": related_api_ids,
+        "evidence_event_ids": [event.event_id],
+    }
+
+    same_memory = session.scalar(
+        select(Memory)
+        .where(
+            Memory.tenant_id == event.tenant_id,
+            Memory.user_id == event.user_id,
+            Memory.memory_type == envelope.intent_memory_type,
+            Memory.state == "active",
+            Memory.canonical_key == envelope.workflow_key,
+        )
+        .order_by(desc(Memory.updated_at))
+        .limit(1)
+    )
+
+    if same_memory is not None:
+        prior_payload = _restored_memory_payload(same_memory)
+        merged_payload = {
+            **prior_payload,
+            **intent_payload,
+            "related_api_ids": sorted(
+                set(prior_payload.get("related_api_ids", [])) | set(related_api_ids)
+            ),
+            "evidence_event_ids": sorted(
+                set(prior_payload.get("evidence_event_ids", [])) | {event.event_id}
+            ),
+        }
+        same_memory.value_jsonb, same_memory.protected_value_encrypted = protect_payload(
+            merged_payload,
+            intent_sensitivity,
+        )
+        same_memory.confidence = max(same_memory.confidence, primary_candidate.confidence)
+        same_memory.importance = max(same_memory.importance, memory_definition.importance_default)
+        same_memory.source_precedence_key = primary_candidate.source_precedence_key
+        same_memory.source_precedence_score = max(
+            same_memory.source_precedence_score,
+            primary_candidate.source_precedence_score,
+        )
+        _attach_evidence(
+            session,
+            linked_record_type="memory",
+            linked_record_id=same_memory.memory_id,
+            event=event,
+            candidate=primary_candidate,
+            config_snapshot_id=envelope.config_snapshot_id or "",
+        )
+        _upsert_memory_embedding(
+            session,
+            memory=same_memory,
+            embedding_text=_embedding_text(
+                merged_payload,
+                sensitivity=intent_sensitivity,
+                memory_definition=memory_definition,
+                policy=policy,
+            ),
+            provider=provider,
+        )
+        return same_memory.memory_id
+
+    clear_payload, encrypted_payload = protect_payload(intent_payload, intent_sensitivity)
+    intent_memory = Memory(
+        memory_id=new_id("memory"),
+        tenant_id=event.tenant_id,
+        user_id=event.user_id,
+        memory_type=envelope.intent_memory_type,
+        subject_entity_id=subject.entity_id,
+        object_entity_id=None,
+        value_jsonb=clear_payload,
+        protected_value_encrypted=encrypted_payload,
+        canonical_key=envelope.workflow_key,
+        state="active",
+        confidence=primary_candidate.confidence,
+        importance=memory_definition.importance_default,
+        sensitivity=intent_sensitivity,
+        ttl_days=memory_definition.default_ttl_days,
+        source_precedence_key=primary_candidate.source_precedence_key,
+        source_precedence_score=primary_candidate.source_precedence_score,
+        supersedes=None,
+        config_snapshot_id=envelope.config_snapshot_id or "",
+    )
+    session.add(intent_memory)
+    session.flush()
+    _attach_evidence(
+        session,
+        linked_record_type="memory",
+        linked_record_id=intent_memory.memory_id,
+        event=event,
+        candidate=primary_candidate,
+        config_snapshot_id=envelope.config_snapshot_id or "",
+    )
+    _upsert_memory_embedding(
+        session,
+        memory=intent_memory,
+        embedding_text=_embedding_text(
+            intent_payload,
+            sensitivity=intent_sensitivity,
+            memory_definition=memory_definition,
+            policy=policy,
+        ),
+        provider=provider,
+    )
+    increment_metric(
+        session,
+        "memory_creation_counts",
+        labels={"memory_type": envelope.intent_memory_type, "record_type": "memory"},
+    )
+    return intent_memory.memory_id
+
+
 def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: DecisionEnvelope, bundle: Mapping[str, ConfigDocument]) -> dict[str, Any]:
     ontology = _memory_ontology(bundle)
     policy = _policy_profile(bundle)
@@ -317,6 +530,17 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                     candidate=candidate,
                     config_snapshot_id=envelope.config_snapshot_id or "",
                 )
+                _upsert_memory_embedding(
+                    session,
+                    memory=same_memory,
+                    embedding_text=_embedding_text(
+                        merged_payload,
+                        sensitivity=candidate.sensitivity,
+                        memory_definition=memory_definition,
+                        policy=policy,
+                    ),
+                    provider=provider,
+                )
                 _record_resolution_metric(session, resolution, candidate.memory_type)
                 resolutions.append({"memory_type": candidate.memory_type, "resolution": resolution})
                 persisted.append(same_memory.memory_id)
@@ -359,6 +583,17 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
                 event=event,
                 candidate=candidate,
                 config_snapshot_id=envelope.config_snapshot_id or "",
+            )
+            _upsert_memory_embedding(
+                session,
+                memory=same_memory,
+                embedding_text=_embedding_text(
+                    _restored_memory_payload(same_memory),
+                    sensitivity=same_memory.sensitivity,
+                    memory_definition=memory_definition,
+                    policy=policy,
+                ),
+                provider=provider,
             )
             _record_resolution_metric(session, "reinforce", candidate.memory_type)
             resolutions.append({"memory_type": candidate.memory_type, "resolution": "reinforce"})
@@ -419,15 +654,12 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
             persisted.append(relation.relation_id)
             continue
 
-        embedding = None
         embedding_text = _embedding_text(
             clear_payload,
             sensitivity=candidate.sensitivity,
             memory_definition=memory_definition,
             policy=policy,
         )
-        if embedding_text:
-            embedding = provider.embed(embedding_text)
 
         memory = Memory(
             memory_id=new_id("memory"),
@@ -446,12 +678,17 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
             ttl_days=memory_definition.default_ttl_days,
             source_precedence_key=candidate.source_precedence_key,
             source_precedence_score=candidate.source_precedence_score,
-            embedding=embedding,
             supersedes=supersedes_id if memory_definition.cardinality == "ONE_ACTIVE" else None,
             config_snapshot_id=envelope.config_snapshot_id or "",
         )
         session.add(memory)
         session.flush()
+        _upsert_memory_embedding(
+            session,
+            memory=memory,
+            embedding_text=embedding_text,
+            provider=provider,
+        )
         _attach_evidence(
             session,
             linked_record_type="memory",
@@ -462,7 +699,23 @@ def persist_event_job(session: Session, event: RuntimeApiEvent, envelope: Decisi
         )
         increment_metric(session, "memory_creation_counts", labels={"memory_type": candidate.memory_type, "record_type": "memory"})
         persisted.append(memory.memory_id)
-    return {"action": envelope.action, "persisted": persisted, "resolutions": resolutions}
+    workflow_intent_memory_id = _persist_workflow_intent_memory(
+        session,
+        event=event,
+        envelope=envelope,
+        ontology=ontology,
+        policy=policy,
+        provider=provider,
+        subject=subject,
+    )
+    if workflow_intent_memory_id:
+        persisted.append(workflow_intent_memory_id)
+    return {
+        "action": envelope.action,
+        "persisted": persisted,
+        "resolutions": resolutions,
+        "workflow_intent_memory_id": workflow_intent_memory_id,
+    }
 
 
 def ingest_event(
@@ -578,32 +831,22 @@ def _process_ttl_cleanup_job(session: Session, job: Job) -> dict[str, Any]:
 def _process_embedding_backfill_job(session: Session, job: Job) -> dict[str, Any]:
     provider = get_embedding_provider()
     updated = 0
-    memories = list(
-        session.scalars(
-            select(Memory).where(
-                Memory.state == "active",
-                Memory.embedding.is_(None),
+    memories = list(session.scalars(select(Memory).where(Memory.state == "active")))
+    for memory in memories:
+        existing = session.scalar(
+            select(MemoryEmbedding).where(
+                MemoryEmbedding.memory_id == memory.memory_id,
+                MemoryEmbedding.provider == provider.provider_name,
+                MemoryEmbedding.model_name == provider.model_name,
             )
         )
-    )
-    for memory in memories:
-        clear_payload = _restored_memory_payload(memory)
-        text = next(
-            (
-                str(item)
-                for item in [
-                    clear_payload.get("summary"),
-                    clear_payload.get("topic"),
-                    clear_payload.get("canonical_customer_id"),
-                    clear_payload.get("domain"),
-                ]
-                if item
-            ),
-            None,
-        )
-        if text:
-            memory.embedding = provider.embed(text)
-            updated += 1
+        if existing is not None:
+            continue
+        text = _memory_embedding_text(memory)
+        if not text:
+            continue
+        _upsert_memory_embedding(session, memory=memory, embedding_text=text, provider=provider)
+        updated += 1
     return {"embedded": updated}
 
 
@@ -844,19 +1087,28 @@ def query_memories(session: Session, request: MemoryQueryRequest) -> list[QueryR
         query_vector = provider.embed(request.query_text)
         if query_vector:
             vector_query = (
-                select(Memory)
+                select(Memory, MemoryEmbedding)
                 .where(
                     Memory.tenant_id == request.tenant_id,
                     Memory.user_id == request.user_id,
                     Memory.state == "active",
-                    Memory.embedding.is_not(None),
                 )
-                .order_by(Memory.embedding.cosine_distance(query_vector))
+                .join(
+                    MemoryEmbedding,
+                    (
+                        (MemoryEmbedding.memory_id == Memory.memory_id)
+                        & (MemoryEmbedding.provider == provider.provider_name)
+                        & (MemoryEmbedding.model_name == provider.model_name)
+                    ),
+                )
+                .order_by(MemoryEmbedding.embedding.cosine_distance(query_vector))
                 .limit(request.top_k)
             )
-            for memory in session.scalars(vector_query):
+            if request.memory_type:
+                vector_query = vector_query.where(Memory.memory_type == request.memory_type)
+            for memory, embedding_row in session.execute(vector_query):
                 recency = _recency_score(memory.updated_at)
-                semantic = _cosine_similarity(memory.embedding, query_vector)
+                semantic = _cosine_similarity(embedding_row.embedding, query_vector)
                 scope, environment = _snapshot_context(session, memory.config_snapshot_id)
                 results.append(
                     QueryResult(
@@ -949,6 +1201,11 @@ def decision_records(session: Session, *, tenant_id: str | None = None) -> list[
             "model_recommendation": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("recommendation"),
             "model_confidence": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("confidence"),
             "reasoning_summary": ((event.decision_jsonb or {}).get("llm_assist") or {}).get("reasoning_summary"),
+            "observed_entry_id": (event.decision_jsonb or {}).get("observed_entry_id"),
+            "module_key": (event.decision_jsonb or {}).get("module_key"),
+            "workflow_key": (event.decision_jsonb or {}).get("workflow_key"),
+            "related_api_ids": (event.decision_jsonb or {}).get("related_api_ids", []),
+            "intent_summary": (event.decision_jsonb or {}).get("intent_summary"),
             "scope": _snapshot_context(session, event.config_snapshot_id)[0],
             "tenant": event.tenant_id,
             "environment": _snapshot_context(session, event.config_snapshot_id)[1],

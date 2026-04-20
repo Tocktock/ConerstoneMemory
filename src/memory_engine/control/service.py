@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from memory_engine.auth.security import AuthUser
 from memory_engine.config.settings import get_settings
+from memory_engine.control.api_package import collect_api_ontology_compile_issues
 from memory_engine.control.schemas import (
     APIOntologyDefinition,
     ConfigDocumentResponse,
@@ -223,56 +224,86 @@ def validate_definition(
         precedence_keys = set()
         if policy_definition:
             precedence_keys = set(PolicyProfileDefinition.model_validate(policy_definition).source_precedence)
-        for entry in parsed.entries:
-            for memory_type in entry.candidate_memory_types:
-                if memory_types and memory_type not in memory_types:
+        for issue in collect_api_ontology_compile_issues(parsed):
+            issues.append(
+                ValidationIssue(
+                    id=new_id("validation"),
+                    severity="error",
+                    path=issue.path,
+                    code=issue.code,
+                    message=issue.message,
+                    document_id=None,
+                )
+            )
+        modules = parsed.modules or []
+        if not modules and parsed.entries:
+            modules = [
+                type("LegacyModule", (), {"module_key": "legacy.default", "entries": parsed.entries})()
+            ]
+        for module in modules:
+            for entry in module.entries:
+                entry_path = f"modules.{module.module_key}.entries.{entry.entry_id or entry.api_name}"
+                for memory_type in entry.candidate_memory_types:
+                    if memory_types and memory_type not in memory_types:
+                        issues.append(
+                            ValidationIssue(
+                                id=new_id("validation"),
+                                severity="error",
+                                path=f"{entry_path}.candidate_memory_types",
+                                code="reference.integrity",
+                                message=f"Unknown memory_type reference: {memory_type}",
+                                document_id=None,
+                            )
+                        )
+                for extractor_name in entry.extractors:
+                    if extractor_name not in EXTRACTOR_REGISTRY:
+                        issues.append(
+                            ValidationIssue(
+                                id=new_id("validation"),
+                                severity="error",
+                                path=f"{entry_path}.extractors",
+                                code="extractor.unknown",
+                                message=f"Unknown extractor: {extractor_name}",
+                                document_id=None,
+                            )
+                        )
+                if precedence_keys and entry.source_precedence_key not in precedence_keys:
                     issues.append(
                         ValidationIssue(
                             id=new_id("validation"),
                             severity="error",
-                            path=f"entries.{entry.api_name}.candidate_memory_types",
-                            code="reference.integrity",
-                            message=f"Unknown memory_type reference: {memory_type}",
+                            path=f"{entry_path}.source_precedence_key",
+                            code="precedence.unknown",
+                            message=f"Unknown source_precedence_key: {entry.source_precedence_key}",
                             document_id=None,
                         )
                     )
-            for extractor_name in entry.extractors:
-                if extractor_name not in EXTRACTOR_REGISTRY:
-                    issues.append(
-                        ValidationIssue(
-                            id=new_id("validation"),
-                            severity="error",
-                            path=f"entries.{entry.api_name}.extractors",
-                            code="extractor.unknown",
-                            message=f"Unknown extractor: {extractor_name}",
-                            document_id=None,
+                if entry.llm_usage_mode != "DISABLED" and entry.prompt_template_key:
+                    try:
+                        get_prompt_template(entry.prompt_template_key)
+                    except ValueError:
+                        issues.append(
+                            ValidationIssue(
+                                id=new_id("validation"),
+                                severity="error",
+                                path=f"{entry_path}.prompt_template_key",
+                                code="prompt_template.unknown",
+                                message=f"Unknown prompt_template_key: {entry.prompt_template_key}",
+                                document_id=None,
+                            )
                         )
-                    )
-            if precedence_keys and entry.source_precedence_key not in precedence_keys:
+        for workflow in parsed.workflows:
+            if memory_types and workflow.intent_memory_type not in memory_types:
                 issues.append(
                     ValidationIssue(
                         id=new_id("validation"),
                         severity="error",
-                        path=f"entries.{entry.api_name}.source_precedence_key",
-                        code="precedence.unknown",
-                        message=f"Unknown source_precedence_key: {entry.source_precedence_key}",
+                        path=f"workflows.{workflow.workflow_key}.intent_memory_type",
+                        code="reference.integrity",
+                        message=f"Unknown memory_type reference: {workflow.intent_memory_type}",
                         document_id=None,
-                        )
                     )
-            if entry.llm_usage_mode != "DISABLED" and entry.prompt_template_key:
-                try:
-                    get_prompt_template(entry.prompt_template_key)
-                except ValueError:
-                    issues.append(
-                        ValidationIssue(
-                            id=new_id("validation"),
-                            severity="error",
-                            path=f"entries.{entry.api_name}.prompt_template_key",
-                            code="prompt_template.unknown",
-                            message=f"Unknown prompt_template_key: {entry.prompt_template_key}",
-                            document_id=None,
-                        )
-                    )
+                )
     if kind == "memory_ontology" and policy_definition:
         ceilings = (
             PolicyProfileDefinition.model_validate(policy_definition)
@@ -290,6 +321,48 @@ def validate_definition(
                         message=(
                             f"{entry.memory_type} allows {entry.allowed_sensitivity} above policy ceiling {ceiling}"
                         ),
+                        document_id=None,
+                    )
+                )
+    if kind == "policy_profile":
+        settings = get_settings()
+        registry = settings.inference_provider_registry or {}
+        referenced_providers = {parsed.model_inference.provider_gate.default_provider}
+        for rule in parsed.model_inference.provider_gate.rules:
+            referenced_providers.update(rule.provider_order)
+            for memory_type in rule.memory_types:
+                if reference_memory_types and memory_type not in reference_memory_types:
+                    issues.append(
+                        ValidationIssue(
+                            id=new_id("validation"),
+                            severity="error",
+                            path="model_inference.provider_gate.rules.memory_types",
+                            code="memory_type.unknown",
+                            message=f"Unknown memory_type reference in provider gate: {memory_type}",
+                            document_id=None,
+                        )
+                    )
+        for provider_id in sorted(referenced_providers):
+            provider_config = registry.get(provider_id)
+            if provider_config is None:
+                issues.append(
+                    ValidationIssue(
+                        id=new_id("validation"),
+                        severity="error",
+                        path="model_inference.provider_gate",
+                        code="inference_provider.unknown",
+                        message=f"Unknown inference provider id: {provider_id}",
+                        document_id=None,
+                    )
+                )
+            elif not provider_config.enabled:
+                issues.append(
+                    ValidationIssue(
+                        id=new_id("validation"),
+                        severity="error",
+                        path="model_inference.provider_gate",
+                        code="inference_provider.disabled",
+                        message=f"Inference provider is disabled in settings: {provider_id}",
                         document_id=None,
                     )
                 )
@@ -537,7 +610,11 @@ def _resolve_validation_bundle(session: Session, request: ValidateRequest) -> di
     return bundle
 
 
-def validate_documents(session: Session, request: ValidateRequest) -> ValidationResponse:
+def validate_documents(
+    session: Session,
+    request: ValidateRequest,
+    actor: AuthUser | None = None,
+) -> ValidationResponse:
     bundle = _resolve_validation_bundle(session, request)
     issues: list[ValidationIssue] = []
     memory_types = set()
@@ -550,6 +627,9 @@ def validate_documents(session: Session, request: ValidateRequest) -> Validation
     if policy_doc:
         policy_definition = policy_doc.definition_jsonb
 
+    for document in bundle.values():
+        session.execute(delete(ValidationResult).where(ValidationResult.config_document_id == document.id))
+
     for kind, document in bundle.items():
         document_issues = [
             issue.model_copy(update={"document_id": document.id})
@@ -560,13 +640,18 @@ def validate_documents(session: Session, request: ValidateRequest) -> Validation
                 policy_definition=policy_definition,
             )
         ]
-        issues.extend(document_issues)
-
-    for document in bundle.values():
-        session.execute(delete(ValidationResult).where(ValidationResult.config_document_id == document.id))
-        for issue in issues:
-            if issue.document_id != document.id:
-                continue
+        persisted_issues = document_issues or [
+            ValidationIssue(
+                id=new_id("validation"),
+                severity="info",
+                path="$",
+                code="validation.pass",
+                message="No validation issues detected.",
+                document_id=document.id,
+            )
+        ]
+        issues.extend(persisted_issues)
+        for issue in persisted_issues:
             session.add(
                 ValidationResult(
                     id=issue.id,
@@ -577,6 +662,32 @@ def validate_documents(session: Session, request: ValidateRequest) -> Validation
                     message=issue.message,
                 )
             )
+        if actor is not None:
+            document_issues = [issue for issue in persisted_issues if issue.severity != "info"]
+            document_status = (
+                "fail"
+                if any(issue.severity == "error" for issue in document_issues)
+                else "warn"
+                if any(issue.severity == "warn" for issue in document_issues)
+                else "pass"
+            )
+            create_audit_log(
+                session,
+                actor=actor.email,
+                role=actor.role,
+                action="config.validate",
+                target_kind=document.kind,
+                target_id=document.id,
+                metadata={
+                    "scope": document.scope,
+                    "tenant_id": document.tenant_id,
+                    "environment": request.environment,
+                    "version": document.version,
+                    "checksum": document.checksum,
+                    "validation_status": document_status,
+                    "issue_count": len(document_issues),
+                },
+            )
         has_document_error = any(issue.severity == "error" and issue.document_id == document.id for issue in issues)
         if not has_document_error and document.status not in {"published", "archived"}:
             document.status = "validated"
@@ -586,7 +697,7 @@ def validate_documents(session: Session, request: ValidateRequest) -> Validation
         status = "fail"
         increment_metric(session, "config_validation_failures", labels={"environment": request.environment})
         session.commit()
-    elif issues:
+    elif any(issue.severity == "warn" for issue in issues):
         status = "warn"
     else:
         status = "pass"
@@ -622,6 +733,35 @@ def get_active_publication(
     if tenant_id is not None:
         query = query.where(ConfigPublication.tenant_id == tenant_id)
     query = query.order_by(ConfigPublication.published_at.desc()).limit(1)
+    return session.scalar(query)
+
+
+def find_matching_publication(
+    session: Session,
+    *,
+    environment: str,
+    api_ontology_document_id: str,
+    memory_ontology_document_id: str,
+    policy_profile_document_id: str,
+    tenant_id: str | None = None,
+) -> ConfigPublication | None:
+    query = (
+        select(ConfigPublication)
+        .where(ConfigPublication.environment == environment)
+        .where(ConfigPublication.api_ontology_document_id == api_ontology_document_id)
+        .where(ConfigPublication.memory_ontology_document_id == memory_ontology_document_id)
+        .where(ConfigPublication.policy_profile_document_id == policy_profile_document_id)
+    )
+    if tenant_id is None:
+        query = query.where(ConfigPublication.scope == "global").where(ConfigPublication.tenant_id.is_(None))
+    else:
+        query = query.where(
+            (
+                (ConfigPublication.scope == "tenant") & (ConfigPublication.tenant_id == tenant_id)
+            )
+            | ((ConfigPublication.scope == "global") & ConfigPublication.tenant_id.is_(None))
+        )
+    query = query.order_by(ConfigPublication.is_active.desc(), ConfigPublication.published_at.desc()).limit(1)
     return session.scalar(query)
 
 
@@ -894,6 +1034,14 @@ def simulate(
             tenant_id=request.tenant_id,
         ),
     )
+    candidate_snapshot = find_matching_publication(
+        session,
+        environment=request.environment,
+        api_ontology_document_id=candidate_bundle["api_ontology"].id,
+        memory_ontology_document_id=candidate_bundle["memory_ontology"].id,
+        policy_profile_document_id=candidate_bundle["policy_profile"].id,
+        tenant_id=request.tenant_id,
+    )
     active_bundle = None
     if active:
         active_bundle = {
@@ -902,8 +1050,8 @@ def simulate(
             "policy_profile": get_document_or_404(session, active.policy_profile_document_id),
         }
 
-    old_decision = evaluator(request.sample_event, active_bundle) if active_bundle else None
-    new_decision = evaluator(request.sample_event, candidate_bundle)
+    old_decision = evaluator(request.sample_event, active_bundle, active) if active_bundle else None
+    new_decision = evaluator(request.sample_event, candidate_bundle, candidate_snapshot)
     old_reasons = set((old_decision or {}).get("reason_codes", []))
     new_reasons = set(new_decision.get("reason_codes", []))
     old_candidates = {(candidate["memory_type"]) for candidate in (old_decision or {}).get("candidates", [])}
@@ -911,7 +1059,7 @@ def simulate(
 
     return SimulationResponse(
         active_snapshot_id=active.id if active else None,
-        candidate_snapshot_id=None,
+        candidate_snapshot_id=candidate_snapshot.id if candidate_snapshot else None,
         old_decision=old_decision,
         new_decision=new_decision,
         changed_reason_codes=sorted(old_reasons ^ new_reasons),

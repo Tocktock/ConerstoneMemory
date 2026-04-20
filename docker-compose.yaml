@@ -24,7 +24,13 @@ services:
       MEMORYENGINE_AUTH_SECRET: dev-secret-change-me
       MEMORYENGINE_ENVIRONMENT: dev
       MEMORYENGINE_CORS_ORIGINS: '["http://localhost:3000"]'
-      MEMORYENGINE_EMBEDDING_PROVIDER: hash
+      MEMORYENGINE_EMBEDDING_PROVIDER: ollama
+      MEMORYENGINE_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      MEMORYENGINE_OLLAMA_INFERENCE_MODEL: gemma4:e4b
+      MEMORYENGINE_OLLAMA_EMBEDDING_MODEL: qwen3-embedding:0.6b
+      MEMORYENGINE_OPENAI_BASE_URL: https://api.openai.com/v1
+      MEMORYENGINE_OPENAI_INFERENCE_MODEL: gpt-5-mini
+      MEMORYENGINE_OPENAI_EMBEDDING_MODEL: text-embedding-3-large
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,6 +39,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8001:8000"
 
@@ -44,13 +52,21 @@ services:
       MEMORYENGINE_DATABASE_URL: postgresql+psycopg://memoryengine:memoryengine@postgres:5432/memoryengine
       MEMORYENGINE_AUTH_SECRET: dev-secret-change-me
       MEMORYENGINE_ENVIRONMENT: dev
-      MEMORYENGINE_EMBEDDING_PROVIDER: hash
+      MEMORYENGINE_EMBEDDING_PROVIDER: ollama
+      MEMORYENGINE_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      MEMORYENGINE_OLLAMA_INFERENCE_MODEL: gemma4:e4b
+      MEMORYENGINE_OLLAMA_EMBEDDING_MODEL: qwen3-embedding:0.6b
+      MEMORYENGINE_OPENAI_BASE_URL: https://api.openai.com/v1
+      MEMORYENGINE_OPENAI_INFERENCE_MODEL: gpt-5-mini
+      MEMORYENGINE_OPENAI_EMBEDDING_MODEL: text-embedding-3-large
     command: ["sh", "-c", "uv run python -m apps.worker.main"]
     depends_on:
       postgres:
         condition: service_healthy
       api:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   web:
     build:

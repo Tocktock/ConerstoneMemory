@@ -274,11 +274,11 @@ def list_validations(
 def validate(
     payload: ValidateRequest | dict[str, Any],
     session: Session = Depends(get_session),
-    _user: AuthUser = Depends(require_roles("editor", "approver", "operator", "admin")),
+    actor: AuthUser = Depends(require_roles("editor", "approver", "operator", "admin")),
 ) -> ValidationResponse:
     request = payload if isinstance(payload, ValidateRequest) else ValidateRequest(**payload)
     try:
-        return validate_documents(session, request)
+        return validate_documents(session, request, actor=actor)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -300,8 +300,8 @@ def simulate_config(
         return simulate(
             session,
             request,
-            evaluator=lambda sample_event, bundle: evaluate_event(
-                None, EventIngestRequest(**sample_event), bundle, None
+            evaluator=lambda sample_event, bundle, snapshot: evaluate_event(
+                None, EventIngestRequest(**sample_event), bundle, snapshot
             ).model_dump(mode="json"),
         )
     except ValueError as exc:

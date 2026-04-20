@@ -38,6 +38,13 @@ DocumentStatus = Literal["draft", "validated", "approved", "published", "archive
 PrimaryFactSource = Literal["request_only", "response_only", "request_then_response", "response_then_request"]
 EvidenceCaptureMode = Literal["none", "summary_only", "summary_plus_artifact_ref"]
 LLMUsageMode = Literal["DISABLED", "ASSIST", "REQUIRE"]
+WorkflowEdgeType = Literal[
+    "PRECEDES",
+    "READS_AFTER_WRITE",
+    "ENABLES",
+    "COMPENSATES",
+    "ALTERNATIVE_TO",
+]
 
 
 SENSITIVITY_RANK = {
@@ -50,6 +57,8 @@ SENSITIVITY_RANK = {
 
 
 class APIOntologyEntry(BaseModel):
+    entry_id: str | None = None
+    module_key: str | None = None
     api_name: str
     enabled: bool
     capability_family: CapabilityFamily
@@ -88,6 +97,8 @@ class APIOntologyEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_llm_fields(self) -> "APIOntologyEntry":
+        if not self.entry_id:
+            self.entry_id = self.api_name
         if self.llm_usage_mode != "DISABLED" and not self.prompt_template_key:
             raise ValueError("prompt_template_key is required when llm_usage_mode is ASSIST or REQUIRE")
         overlap = set(self.llm_allowed_field_paths) & set(self.llm_blocked_field_paths)
@@ -111,9 +122,40 @@ class EvidenceCapturePolicyConfig(BaseModel):
     response: EvidenceCaptureMode = "summary_only"
 
 
+class APIOntologyModule(BaseModel):
+    module_key: str
+    title: str
+    description: str = ""
+    entries: list[APIOntologyEntry]
+
+
+class APIWorkflowRelationshipEdge(BaseModel):
+    from_entry_id: str
+    to_entry_id: str
+    edge_type: WorkflowEdgeType
+
+
+class APIWorkflowIntentRule(BaseModel):
+    observed_entry_ids: list[str]
+    summary: str
+
+
+class APIWorkflowDefinition(BaseModel):
+    workflow_key: str
+    title: str
+    description: str = ""
+    participant_entry_ids: list[str]
+    relationship_edges: list[APIWorkflowRelationshipEdge] = Field(default_factory=list)
+    intent_memory_type: str
+    default_intent_summary: str
+    intent_rules: list[APIWorkflowIntentRule] = Field(default_factory=list)
+
+
 class APIOntologyDefinition(BaseModel):
     document_name: str = "API Ontology"
-    entries: list[APIOntologyEntry]
+    modules: list[APIOntologyModule] = Field(default_factory=list)
+    workflows: list[APIWorkflowDefinition] = Field(default_factory=list)
+    entries: list[APIOntologyEntry] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -121,6 +163,10 @@ class APIOntologyDefinition(BaseModel):
         if isinstance(value, dict) and "entries" not in value and "api_name" in value:
             return {"entries": [value]}
         return value
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "APIOntologyDefinition":
+        return self
 
 
 class MemoryOntologyEntry(BaseModel):
@@ -222,6 +268,26 @@ class ForgetRulesConfig(BaseModel):
     remove_from_retrieval: bool
 
 
+class ProviderGateRule(BaseModel):
+    capability_families: list[CapabilityFamily] = Field(default_factory=list)
+    llm_usage_modes: list[LLMUsageMode] = Field(default_factory=list)
+    memory_types: list[str] = Field(default_factory=list)
+    max_sensitivity: SensitivityLevel | None = None
+    provider_order: list[str]
+
+    @field_validator("provider_order")
+    @classmethod
+    def validate_provider_order(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("provider_order must not be empty")
+        return value
+
+
+class ProviderGateConfig(BaseModel):
+    default_provider: str
+    rules: list[ProviderGateRule] = Field(default_factory=list)
+
+
 class ModelInferenceConfig(BaseModel):
     enabled: bool
     explicit_write_bypass: bool
@@ -230,6 +296,7 @@ class ModelInferenceConfig(BaseModel):
     low_confidence_threshold: float = Field(ge=0.0, le=1.0)
     allow_low_confidence_persist: bool
     log_reasoning_summary: bool
+    provider_gate: ProviderGateConfig
 
     @model_validator(mode="after")
     def validate_flags(self) -> "ModelInferenceConfig":

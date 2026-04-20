@@ -79,6 +79,12 @@ class DecisionEnvelope(BaseModel):
     reason_codes: list[str]
     candidates: list[CandidateMemory]
     repeat_score: float = 0.0
+    observed_entry_id: str | None = None
+    module_key: str | None = None
+    workflow_key: str | None = None
+    related_api_ids: list[str] = Field(default_factory=list)
+    intent_summary: str | None = None
+    intent_memory_type: str | None = None
     llm_assist: LLMAssistSummary = Field(default_factory=lambda: LLMAssistSummary(invoked=False))
 
 

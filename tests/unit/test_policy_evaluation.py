@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from memory_engine.runtime.inference import InferenceResult
 from memory_engine.runtime.policy import (
     evaluate_event,
     filter_prompt_fields,
@@ -7,6 +8,12 @@ from memory_engine.runtime.policy import (
     validate_candidate_set,
 )
 from memory_engine.runtime.schemas import CandidateMemory, EventIngestRequest
+from tests.support.builders import (
+    base_api_module,
+    base_api_package_definition,
+    base_memory_definition,
+    base_policy_definition,
+)
 
 
 class DummyDocument:
@@ -72,103 +79,170 @@ def _api_entry(**overrides):
         "notes": "",
     }
     entry.update(overrides)
+    entry["entry_id"] = str(overrides.get("entry_id") or entry["api_name"])
     return entry
 
 
-def _memory_definition():
-    return {
-        "entries": [
-            {
-                "memory_type": "profile.primary_address",
-                "enabled": True,
-                "memory_class": "fact",
-                "subject_type": "User",
-                "object_type": "Address",
-                "cardinality": "ONE_ACTIVE",
-                "identity_strategy": "user_id + slot(primary)",
-                "merge_strategy": "MERGE_ATTRIBUTES_WHEN_EQUAL",
-                "conflict_strategy": "SUPERSEDE_BY_PRECEDENCE",
-                "allowed_sensitivity": "S2_PERSONAL",
-                "embed_mode": "COARSE_SUMMARY_ONLY",
-                "default_ttl_days": None,
-                "retrieval_mode": "EXACT_THEN_VECTOR",
-                "importance_default": 0.95,
-                "tenant_override_allowed": True,
-                "notes": "",
-            },
-            {
-                "memory_type": "interest.topic",
-                "enabled": True,
-                "memory_class": "interest",
-                "subject_type": "User",
-                "object_type": "Topic",
-                "cardinality": "MANY_SCORED",
-                "identity_strategy": "user_id + canonical_topic_id",
-                "merge_strategy": "REINFORCE_SCORE",
-                "conflict_strategy": "NO_DIRECT_CONFLICT",
-                "allowed_sensitivity": "S1_INTERNAL",
-                "embed_mode": "SUMMARY",
-                "default_ttl_days": 180,
-                "retrieval_mode": "VECTOR_PLUS_FILTER",
-                "importance_default": 0.6,
-                "tenant_override_allowed": True,
-                "notes": "",
-            },
-        ]
-    }
-
-
 def _policy_definition():
-    return {
-        "profile_name": "default-v1",
-        "frequency": {
-            "half_life_days": 14,
-            "weights": {
-                "decayed_weight": 0.45,
-                "unique_sessions_30d": 0.25,
-                "unique_days_30d": 0.20,
-                "source_diversity_30d": 0.10,
-            },
-            "thresholds": {"persist": 0.70, "observe": 0.40},
-            "burst_penalty": {
-                "enabled": True,
-                "penalty_value": 0.25,
-                "same_session_ratio_threshold": 0.80,
-            },
-        },
-        "sensitivity": {
-            "hard_block_levels": ["S4_RESTRICTED", "S3_CONFIDENTIAL"],
-            "memory_type_allow_ceiling": {
-                "profile.primary_address": "S2_PERSONAL",
-                "interest.topic": "S1_INTERNAL",
-            },
-        },
-        "source_precedence": {
-            "explicit_user_write": 100,
-            "repeated_behavioral_signal": 50,
-        },
-        "conflict_windows": {"typo_correction_minutes": 5},
-        "embedding_rules": {
-            "raw_sensitive_embedding_allowed": False,
-            "redact_address_detail": True,
-        },
-        "forget_rules": {"tombstone_on_delete": True, "remove_from_retrieval": True},
-        "model_inference": {
-            "enabled": True,
-            "explicit_write_bypass": True,
-            "hard_rule_bypass": True,
-            "require_policy_validation": True,
-            "low_confidence_threshold": 0.6,
-            "allow_low_confidence_persist": True,
-            "log_reasoning_summary": True,
-        },
+    definition = base_policy_definition()
+    definition["source_precedence"] = {
+        "explicit_user_write": 100,
+        "repeated_behavioral_signal": 50,
     }
+    return definition
 
 
 def _bundle(api_entries):
     return {
         "api_ontology": DummyDocument({"entries": api_entries}),
-        "memory_ontology": DummyDocument(_memory_definition()),
+        "memory_ontology": DummyDocument(base_memory_definition()),
+        "policy_profile": DummyDocument(_policy_definition()),
+    }
+
+
+def _workflow_entry(
+    *,
+    entry_id: str,
+    api_name: str,
+    source_system: str,
+    http_method: str,
+    route_template: str,
+    module_key: str,
+    method_semantics: str = "WRITE",
+) -> dict:
+    return _api_entry(
+        entry_id=entry_id,
+        api_name=api_name,
+        capability_family="ENTITY_UPSERT" if method_semantics == "WRITE" else "CONTENT_READ",
+        method_semantics=method_semantics,
+        candidate_memory_types=["interest.topic"],
+        default_action="UPSERT" if method_semantics == "WRITE" else "OBSERVE",
+        repeat_policy="BYPASS" if method_semantics == "WRITE" else "REQUIRED",
+        sensitivity_hint="S1_INTERNAL",
+        source_trust=80 if method_semantics == "WRITE" else 30,
+        source_precedence_key="explicit_user_write" if method_semantics == "WRITE" else "repeated_behavioral_signal",
+        extractors=["topic_extractor"],
+        relation_templates=[],
+        dedup_strategy_hint="TOPIC_SCORE",
+        conflict_strategy_hint="NO_DIRECT_CONFLICT",
+        event_match={
+            "source_system": source_system,
+            "http_method": http_method,
+            "route_template": route_template,
+        },
+        request_field_selectors=["$.topic"],
+        response_field_selectors=[],
+        normalization_rules={"primary_fact_source": "request_only"},
+        llm_usage_mode="DISABLED",
+        prompt_template_key=None,
+        llm_allowed_field_paths=[],
+        llm_blocked_field_paths=[],
+        module_key=module_key,
+        notes="workflow package test entry",
+    )
+
+
+def _workflow_bundle():
+    return {
+        "api_ontology": DummyDocument(
+            base_api_package_definition(
+                document_name="Checkout Package",
+                modules=[
+                    base_api_module(
+                        module_key="orders.lifecycle",
+                        title="Orders Lifecycle",
+                        entries=[
+                            _workflow_entry(
+                                entry_id="order.register",
+                                api_name="order.register",
+                                source_system="order_service",
+                                http_method="POST",
+                                route_template="/v1/orders",
+                                module_key="orders.lifecycle",
+                            ),
+                            _workflow_entry(
+                                entry_id="order.get",
+                                api_name="order.get",
+                                source_system="order_service",
+                                http_method="GET",
+                                route_template="/v1/orders/{orderId}",
+                                module_key="orders.lifecycle",
+                                method_semantics="READ",
+                            ),
+                        ],
+                    ),
+                    base_api_module(
+                        module_key="orders.payment",
+                        title="Orders Payment",
+                        entries=[
+                            _workflow_entry(
+                                entry_id="payment.charge",
+                                api_name="payment.charge",
+                                source_system="payment_service",
+                                http_method="POST",
+                                route_template="/v1/payments/charge",
+                                module_key="orders.payment",
+                            ),
+                            _workflow_entry(
+                                entry_id="payment.refund",
+                                api_name="payment.refund",
+                                source_system="payment_service",
+                                http_method="POST",
+                                route_template="/v1/payments/refund",
+                                module_key="orders.payment",
+                            ),
+                        ],
+                    ),
+                ],
+                workflows=[
+                    {
+                        "workflow_key": "order_checkout",
+                        "title": "Order checkout",
+                        "description": "Order registration, retrieval, charge, and refund form one workflow.",
+                        "participant_entry_ids": [
+                            "order.register",
+                            "order.get",
+                            "payment.charge",
+                            "payment.refund",
+                        ],
+                        "relationship_edges": [
+                            {
+                                "from_entry_id": "order.register",
+                                "to_entry_id": "order.get",
+                                "edge_type": "READS_AFTER_WRITE",
+                            },
+                            {
+                                "from_entry_id": "order.register",
+                                "to_entry_id": "payment.charge",
+                                "edge_type": "ENABLES",
+                            },
+                            {
+                                "from_entry_id": "payment.refund",
+                                "to_entry_id": "payment.charge",
+                                "edge_type": "COMPENSATES",
+                            },
+                        ],
+                        "intent_memory_type": "intent.user_goal",
+                        "default_intent_summary": "User is trying to place an order and complete payment.",
+                        "intent_rules": [
+                            {
+                                "observed_entry_ids": ["order.register"],
+                                "summary": "User is trying to place an order and complete payment.",
+                            },
+                            {
+                                "observed_entry_ids": ["payment.charge"],
+                                "summary": "User is completing checkout and charging payment for an order.",
+                            },
+                            {
+                                "observed_entry_ids": ["payment.refund"],
+                                "summary": "User is correcting a prior checkout by refunding payment.",
+                            },
+                        ],
+                    }
+                ],
+            )
+        ),
+        "memory_ontology": DummyDocument(base_memory_definition()),
         "policy_profile": DummyDocument(_policy_definition()),
     }
 
@@ -224,6 +298,28 @@ def test_evaluate_event_blocks_when_tenant_override_raises_sensitivity() -> None
     assert decision.llm_assist.invoked is False
 
 
+def test_evaluate_event_resolves_workflow_context_from_api_package() -> None:
+    decision = evaluate_event(
+        None,
+        _event(
+            "order.register",
+            request_fields={"topic": "order checkout"},
+            source_system="order_service",
+            http_method="POST",
+            route_template="/v1/orders",
+        ),
+        _workflow_bundle(),
+        None,
+    )
+    assert decision.action == "UPSERT"
+    assert decision.observed_entry_id == "order.register"
+    assert decision.module_key == "orders.lifecycle"
+    assert decision.workflow_key == "order_checkout"
+    assert decision.related_api_ids == ["order.get", "payment.charge"]
+    assert decision.intent_summary == "User is trying to place an order and complete payment."
+    assert decision.intent_memory_type == "intent.user_goal"
+
+
 def test_normalize_event_fields_for_primary_fact_sources() -> None:
     event = _event(
         "profile.updateAddress",
@@ -266,7 +362,7 @@ def test_validate_candidate_set_rejects_ineligible_memory_type() -> None:
                 source_precedence_score=50,
             )
         ],
-        {entry["memory_type"]: entry for entry in _memory_definition()["entries"]},
+        {entry["memory_type"]: entry for entry in base_memory_definition()["entries"]},
         type("PolicyHolder", (), {"sensitivity": type("SensitivityHolder", (), {"hard_block_levels": ["S4_RESTRICTED", "S3_CONFIDENTIAL"]})()})(),  # type: ignore[arg-type]
     )
     assert candidates == []
@@ -274,7 +370,7 @@ def test_validate_candidate_set_rejects_ineligible_memory_type() -> None:
     assert blocked is False
 
 
-def test_model_low_confidence_persisted_reason_code() -> None:
+def test_model_low_confidence_persisted_reason_code(monkeypatch) -> None:
     search_entry = _api_entry(
         api_name="search.webSearch",
         capability_family="SEARCH_READ",
@@ -298,6 +394,38 @@ def test_model_low_confidence_persisted_reason_code() -> None:
         prompt_template_key="memory.hybrid.search.v1",
         llm_allowed_field_paths=["$.normalized_fields.query"],
     )
+    dummy_result = InferenceResult(
+        provider="ollama",
+        model_name="gemma4:e4b",
+        prompt_template_key="memory.hybrid.search.v1",
+        prompt_version="2026-04-11",
+        input_hash="hash",
+        recommendation="UPSERT",
+        confidence=0.34,
+        reasoning_summary="low confidence persist",
+        candidates=[
+            CandidateMemory(
+                memory_type="interest.topic",
+                canonical_key="mortgage_rates",
+                confidence=0.34,
+                sensitivity="S1_INTERNAL",
+                value={"topic": "mortgage_rates", "raw": "mortgage rates"},
+                extractor="topic_extractor",
+                source_trust=30,
+                source_precedence_key="repeated_behavioral_signal",
+                source_precedence_score=50,
+            )
+        ],
+    )
+
+    class DummyProvider:
+        provider_name = "ollama"
+        model_name = "gemma4:e4b"
+
+        def infer(self, request):
+            return dummy_result
+
+    monkeypatch.setattr("memory_engine.runtime.policy.get_inference_provider", lambda provider_id: DummyProvider())
     decision = evaluate_event(
         None,
         _event(
@@ -314,3 +442,59 @@ def test_model_low_confidence_persisted_reason_code() -> None:
     assert decision.reason_codes == ["MODEL_LOW_CONFIDENCE_PERSISTED"]
     assert decision.llm_assist.invoked is True
     assert decision.llm_assist.confidence is not None and decision.llm_assist.confidence < 0.6
+
+
+def test_model_invocation_failure_keeps_primary_provider_attribution(monkeypatch) -> None:
+    search_entry = _api_entry(
+        api_name="search.webSearch",
+        capability_family="SEARCH_READ",
+        method_semantics="READ",
+        candidate_memory_types=["interest.topic"],
+        default_action="OBSERVE",
+        repeat_policy="REQUIRED",
+        sensitivity_hint="S1_INTERNAL",
+        source_trust=30,
+        source_precedence_key="repeated_behavioral_signal",
+        extractors=["topic_extractor"],
+        relation_templates=[],
+        event_match={
+            "source_system": "search_service",
+            "http_method": "GET",
+            "route_template": "/v1/search",
+        },
+        request_field_selectors=["$.query"],
+        response_field_selectors=[],
+        llm_usage_mode="ASSIST",
+        prompt_template_key="memory.hybrid.search.v1",
+        llm_allowed_field_paths=["$.normalized_fields.query"],
+    )
+
+    class FailingPrimaryProvider:
+        provider_name = "ollama"
+        model_name = "gemma4:e4b"
+
+        def infer(self, request):
+            raise ValueError("temporary ollama failure")
+
+    def fake_get_provider(provider_id: str):
+        if provider_id == "ollama":
+            return FailingPrimaryProvider()
+        raise ValueError("OpenAI provider requires an API key")
+
+    monkeypatch.setattr("memory_engine.runtime.policy.get_inference_provider", fake_get_provider)
+    decision = evaluate_event(
+        None,
+        _event(
+            "search.webSearch",
+            request_fields={"query": "mortgage rates"},
+            source_system="search_service",
+            http_method="GET",
+            route_template="/v1/search",
+        ),
+        _bundle([search_entry]),
+        None,
+    )
+    assert decision.llm_assist.invoked is True
+    assert decision.llm_assist.provider == "ollama"
+    assert decision.llm_assist.model_name == "gemma4:e4b"
+    assert "MODEL_INVOCATION_FAILED" in decision.reason_codes

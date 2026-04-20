@@ -37,8 +37,8 @@ These options were rejected because they either lose needed semantic context, we
 
 ## Consequences
 
-- API Ontology becomes responsible for event matching, field selection, redaction boundaries, and model-routing hints.
-- The Policy Profile must include model-governance rules in addition to frequency and sensitivity rules.
+- API Ontology becomes responsible for event matching, field selection, redaction boundaries, and model-escalation eligibility boundaries.
+- The Policy Profile must include model-governance and internal provider-routing rules in addition to frequency and sensitivity rules.
 - Runtime auditability improves because model recommendations and final policy outcomes can be compared directly.
 - Ingestion becomes more explicit about which parts of request/response data are safe and relevant.
 

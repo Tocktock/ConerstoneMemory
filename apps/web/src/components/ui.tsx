@@ -27,7 +27,7 @@ export function Button({
     <button
       {...props}
       className={mergeClassNames(
-        "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-center text-[15px] font-semibold leading-tight whitespace-normal shadow-sm transition duration-150 sm:min-h-10 sm:py-2 sm:text-sm",
+        "inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-center text-[15px] font-semibold leading-tight whitespace-normal shadow-sm transition duration-150 active:translate-y-px active:scale-[0.99] sm:min-h-10 sm:py-2 sm:text-sm",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/45 disabled:cursor-not-allowed disabled:opacity-60",
         styles,
         className,

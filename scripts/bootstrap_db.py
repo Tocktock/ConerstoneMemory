@@ -15,6 +15,7 @@ EXPECTED_TABLES = [
     ("runtime", "entity_aliases"),
     ("runtime", "evidence"),
     ("runtime", "memories"),
+    ("runtime", "memory_embeddings"),
     ("runtime", "relations"),
     ("runtime", "signal_counters"),
     ("ops", "jobs"),
@@ -27,6 +28,7 @@ def main() -> None:
     engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
     with engine.begin() as connection:
         inspector = inspect(connection)
+        has_alembic_version = inspector.has_table("alembic_version")
         present = [
             (schema, table)
             for schema, table in EXPECTED_TABLES
@@ -35,16 +37,24 @@ def main() -> None:
         if len(present) == len(EXPECTED_TABLES):
             print("bootstrap_db: application schema already present")
             return
+        if has_alembic_version and not present:
+            connection.execute(text("DROP TABLE alembic_version"))
+            print("bootstrap_db: removed stale alembic version marker from an empty schema")
+            return
+        if has_alembic_version:
+            missing = [f"{schema}.{table}" for schema, table in EXPECTED_TABLES if (schema, table) not in present]
+            if missing:
+                print(
+                    "bootstrap_db: existing schema requires migrations; continuing to Alembic. "
+                    f"Missing tables: {', '.join(missing)}"
+                )
+            return
         if present:
             missing = [f"{schema}.{table}" for schema, table in EXPECTED_TABLES if (schema, table) not in present]
             raise SystemExit(
                 "bootstrap_db: partial application schema detected; refusing automatic repair. "
                 f"Missing tables: {', '.join(missing)}"
             )
-        if inspector.has_table("alembic_version"):
-            connection.execute(text("DROP TABLE alembic_version"))
-            print("bootstrap_db: removed stale alembic version marker from an empty schema")
-            return
         print("bootstrap_db: database is empty; continuing to Alembic migrations")
 
 

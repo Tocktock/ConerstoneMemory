@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -222,11 +222,29 @@ class Memory(Base):
     ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_precedence_key: Mapped[str] = mapped_column(String(128), nullable=False, default="weak_free_text_inference")
     source_precedence_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(8), nullable=True)
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     supersedes: Mapped[str | None] = mapped_column(String(64), ForeignKey("runtime.memories.memory_id"), nullable=True)
     config_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class MemoryEmbedding(Base):
+    __tablename__ = "memory_embeddings"
+    __table_args__ = (
+        Index("ix_runtime_memory_embeddings_provider_model", "provider", "model_name"),
+        {"schema": "runtime"},
+    )
+
+    memory_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("runtime.memories.memory_id"), primary_key=True, nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(128), primary_key=True, nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
+    text_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 

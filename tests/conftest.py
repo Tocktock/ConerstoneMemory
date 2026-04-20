@@ -10,6 +10,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from memory_engine.api.app import create_app
+from memory_engine.config.settings import get_settings
 from memory_engine.db.base import Base
 from memory_engine.db.session import get_session
 
@@ -89,6 +90,13 @@ def engine():
     yield engine
     _reset_test_schemas(engine)
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_cache() -> Generator[None, None, None]:
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture()

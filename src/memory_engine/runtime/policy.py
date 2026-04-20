@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from memory_engine.control.api_package import CompiledAPIOntologyPackage, compile_api_ontology_definition
 from memory_engine.control.schemas import (
     APIOntologyDefinition,
     APIOntologyEntry,
@@ -21,6 +22,7 @@ from memory_engine.runtime.inference import (
     InferenceRequest,
     build_inference_input_hash,
     get_inference_provider,
+    select_inference_provider_ids,
 )
 from memory_engine.runtime.prompts import get_prompt_template
 from memory_engine.runtime.schemas import CandidateMemory, DecisionEnvelope, EventIngestRequest, LLMAssistSummary
@@ -68,6 +70,10 @@ def _bundle_to_definition(bundle: Mapping[str, ConfigDocument]) -> tuple[
     )
 
 
+def _compile_api_doc(api_doc: APIOntologyDefinition) -> CompiledAPIOntologyPackage:
+    return compile_api_ontology_definition(api_doc)
+
+
 def compute_repeat_score(counter: SignalCounter | None, policy: PolicyProfileDefinition) -> float:
     if counter is None:
         return 0.0
@@ -100,9 +106,19 @@ def _flatten_selected_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     return flattened
 
 
+def _expand_semantic_aliases(fields: Mapping[str, Any]) -> dict[str, Any]:
+    expanded = dict(fields)
+    for key, value in list(fields.items()):
+        if key.startswith("normalized_") and len(key) > len("normalized_"):
+            canonical_key = key[len("normalized_") :]
+            expanded[key] = value
+            expanded[canonical_key] = value
+    return expanded
+
+
 def normalize_event_fields(event: EventIngestRequest, primary_fact_source: str) -> dict[str, Any]:
-    request_fields = _flatten_selected_fields(event.request.selected_fields)
-    response_fields = _flatten_selected_fields(event.response.selected_fields)
+    request_fields = _expand_semantic_aliases(_flatten_selected_fields(event.request.selected_fields))
+    response_fields = _expand_semantic_aliases(_flatten_selected_fields(event.response.selected_fields))
     if primary_fact_source == "request_only":
         return dict(request_fields)
     if primary_fact_source == "response_only":
@@ -190,20 +206,45 @@ def filter_prompt_fields(payload: dict[str, Any], allowed_paths: list[str], bloc
     return filtered
 
 
-def match_api_entry(api_doc: APIOntologyDefinition, event: EventIngestRequest) -> APIOntologyEntry | None:
-    for entry in api_doc.entries:
-        if not entry.enabled:
-            continue
-        if entry.api_name != event.api_name:
-            continue
-        if entry.event_match.source_system != event.source_system:
-            continue
-        if entry.event_match.http_method.upper() != event.http_method.upper():
-            continue
-        if entry.event_match.route_template != event.route_template:
-            continue
-        return entry
-    return None
+def match_api_entry(
+    api_doc: APIOntologyDefinition | CompiledAPIOntologyPackage,
+    event: EventIngestRequest,
+) -> APIOntologyEntry | None:
+    compiled = api_doc if isinstance(api_doc, CompiledAPIOntologyPackage) else _compile_api_doc(api_doc)
+    entry = compiled.match_index.get(
+        (
+            event.api_name,
+            event.source_system,
+            event.http_method.upper(),
+            event.route_template,
+        )
+    )
+    if entry is None or not entry.enabled:
+        return None
+    return entry
+
+
+def resolve_workflow_context(
+    compiled_api: CompiledAPIOntologyPackage,
+    api_entry: APIOntologyEntry,
+) -> tuple[str | None, str | None, list[str], str | None, str | None]:
+    entry_id = api_entry.entry_id or api_entry.api_name
+    workflow = compiled_api.workflow_by_entry_id.get(entry_id)
+    related_api_ids = compiled_api.related_api_ids_by_entry_id.get(entry_id, [])
+    if workflow is None:
+        return api_entry.module_key, None, related_api_ids, None, None
+    summary = workflow.default_intent_summary
+    for rule in workflow.intent_rules:
+        if entry_id in rule.observed_entry_ids:
+            summary = rule.summary
+            break
+    return (
+        api_entry.module_key,
+        workflow.workflow_key,
+        related_api_ids,
+        summary,
+        workflow.intent_memory_type,
+    )
 
 
 def _extract_candidates(
@@ -340,9 +381,10 @@ def evaluate_event(
     snapshot: ConfigPublication | None,
 ) -> DecisionEnvelope:
     api_doc, memory_doc, policy = _bundle_to_definition(bundle)
+    compiled_api = _compile_api_doc(api_doc)
     event_id = new_id("evt")
     memory_entries = {entry.memory_type: entry for entry in memory_doc.entries}
-    api_entry = match_api_entry(api_doc, event)
+    api_entry = match_api_entry(compiled_api, event)
 
     if api_entry is None:
         action = "OBSERVE" if any(token in event.api_name.lower() for token in ["read", "search"]) else "BLOCK"
@@ -354,6 +396,11 @@ def evaluate_event(
             candidates=[],
         )
 
+    module_key, workflow_key, related_api_ids, intent_summary, intent_memory_type = resolve_workflow_context(
+        compiled_api, api_entry
+    )
+    observed_entry_id = api_entry.entry_id or api_entry.api_name
+
     normalized_fields = normalize_event_fields(event, api_entry.normalization_rules.primary_fact_source)
     normalized_envelope = build_normalized_envelope(event, normalized_fields)
 
@@ -364,6 +411,12 @@ def evaluate_event(
             action="FORGET",
             reason_codes=["EXPLICIT_FORGET"],
             candidates=[],
+            observed_entry_id=observed_entry_id,
+            module_key=module_key,
+            workflow_key=workflow_key,
+            related_api_ids=related_api_ids,
+            intent_summary=intent_summary,
+            intent_memory_type=intent_memory_type,
         )
 
     classifier_sensitivity = _classifier_sensitivity(normalized_fields)
@@ -374,6 +427,12 @@ def evaluate_event(
             action="BLOCK",
             reason_codes=["HARD_SENSITIVITY_BLOCK"],
             candidates=[],
+            observed_entry_id=observed_entry_id,
+            module_key=module_key,
+            workflow_key=workflow_key,
+            related_api_ids=related_api_ids,
+            intent_summary=intent_summary,
+            intent_memory_type=intent_memory_type,
         )
 
     deterministic_candidates = _extract_candidates(normalized_fields, api_entry, policy, memory_entries)
@@ -389,6 +448,12 @@ def evaluate_event(
             action="BLOCK",
             reason_codes=candidate_reasons or ["SENSITIVITY_BLOCKED"],
             candidates=validated_candidates or deterministic_candidates,
+            observed_entry_id=observed_entry_id,
+            module_key=module_key,
+            workflow_key=workflow_key,
+            related_api_ids=related_api_ids,
+            intent_summary=intent_summary,
+            intent_memory_type=intent_memory_type,
         )
 
     if (
@@ -404,6 +469,12 @@ def evaluate_event(
             reason_codes=["EXPLICIT_WRITE_BYPASS", *reasons],
             candidates=validated_candidates,
             repeat_score=repeat_score,
+            observed_entry_id=observed_entry_id,
+            module_key=module_key,
+            workflow_key=workflow_key,
+            related_api_ids=related_api_ids,
+            intent_summary=intent_summary,
+            intent_memory_type=intent_memory_type,
         )
 
     llm_active = policy.model_inference.enabled and api_entry.llm_usage_mode in {"ASSIST", "REQUIRE"}
@@ -413,32 +484,49 @@ def evaluate_event(
             api_entry.llm_allowed_field_paths,
             api_entry.llm_blocked_field_paths,
         )
-        provider = get_inference_provider()
         inference_id: str | None = None
-        try:
-            inference_result = provider.infer(
-                InferenceRequest(
-                    event=event,
-                    normalized_envelope=normalized_envelope,
-                    prompt_payload=prompt_payload,
-                    api_entry=api_entry,
-                    eligible_memory_types=list(api_entry.candidate_memory_types),
-                    base_candidates=validated_candidates,
+        prompt_version = None
+        if api_entry.prompt_template_key:
+            try:
+                prompt_version = get_prompt_template(api_entry.prompt_template_key).version
+            except ValueError:
+                prompt_version = "unknown"
+        provider_ids = select_inference_provider_ids(api_entry, validated_candidates, policy)
+        last_exc: Exception | None = None
+        last_provider_name: str | None = None
+        last_model_name: str | None = None
+        inference_result: InferenceResult | None = None
+        for provider_id in provider_ids:
+            try:
+                provider = get_inference_provider(provider_id)
+            except Exception as exc:
+                last_exc = exc
+                if last_provider_name is None:
+                    last_provider_name = provider_id
+                continue
+            last_provider_name = provider.provider_name
+            last_model_name = provider.model_name
+            try:
+                inference_result = provider.infer(
+                    InferenceRequest(
+                        event=event,
+                        normalized_envelope=normalized_envelope,
+                        prompt_payload=prompt_payload,
+                        api_entry=api_entry,
+                        eligible_memory_types=list(api_entry.candidate_memory_types),
+                        base_candidates=validated_candidates,
+                    )
                 )
-            )
-        except Exception as exc:
+                break
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if inference_result is None:
             fallback_action, fallback_reasons, repeat_score = _build_repeat_action(
                 session, event, api_entry, policy, validated_candidates
             )
             final_action = "OBSERVE" if api_entry.llm_usage_mode == "REQUIRE" else fallback_action
             reason_code = "MODEL_REQUIRED_FAILED" if api_entry.llm_usage_mode == "REQUIRE" else "MODEL_INVOCATION_FAILED"
-            inference_id = None
-            prompt_version = None
-            if api_entry.prompt_template_key:
-                try:
-                    prompt_version = get_prompt_template(api_entry.prompt_template_key).version
-                except ValueError:
-                    prompt_version = "unknown"
             if session is not None and api_entry.prompt_template_key:
                 inference_id = new_id("infer")
                 session.add(
@@ -446,8 +534,8 @@ def evaluate_event(
                         inference_id=inference_id,
                         source_event_id=event_id,
                         config_snapshot_id=snapshot.id if snapshot else None,
-                        model_provider=provider.provider_name,
-                        model_name=provider.model_name,
+                        model_provider=last_provider_name or "unavailable",
+                        model_name=last_model_name or "unavailable",
                         prompt_template_key=api_entry.prompt_template_key,
                         prompt_version=prompt_version or "unknown",
                         input_hash=build_inference_input_hash(
@@ -459,7 +547,7 @@ def evaluate_event(
                         ),
                         llm_recommendation="OBSERVE",
                         llm_confidence=0.0,
-                        llm_reasoning_summary=str(exc) if policy.model_inference.log_reasoning_summary else None,
+                        llm_reasoning_summary=str(last_exc) if policy.model_inference.log_reasoning_summary and last_exc else None,
                         candidate_jsonb=[],
                         final_action=final_action,
                     )
@@ -471,16 +559,22 @@ def evaluate_event(
                 reason_codes=[reason_code, *fallback_reasons],
                 candidates=validated_candidates,
                 repeat_score=repeat_score,
+                observed_entry_id=observed_entry_id,
+                module_key=module_key,
+                workflow_key=workflow_key,
+                related_api_ids=related_api_ids,
+                intent_summary=intent_summary,
+                intent_memory_type=intent_memory_type,
                 llm_assist=LLMAssistSummary(
                     invoked=True,
                     inference_id=inference_id,
-                    provider=provider.provider_name,
-                    model_name=provider.model_name,
+                    provider=last_provider_name,
+                    model_name=last_model_name,
                     prompt_template_key=api_entry.prompt_template_key,
                     prompt_version=prompt_version,
                     recommendation="OBSERVE",
                     confidence=0.0,
-                    reasoning_summary=str(exc) if policy.model_inference.log_reasoning_summary else None,
+                    reasoning_summary=str(last_exc) if policy.model_inference.log_reasoning_summary and last_exc else None,
                 ),
             )
 
@@ -544,6 +638,12 @@ def evaluate_event(
             action=final_action,
             reason_codes=reason_codes,
             candidates=provider_candidates,
+            observed_entry_id=observed_entry_id,
+            module_key=module_key,
+            workflow_key=workflow_key,
+            related_api_ids=related_api_ids,
+            intent_summary=intent_summary,
+            intent_memory_type=intent_memory_type,
             llm_assist=_inference_llm_assist(
                 inference_result,
                 inference_id=inference_id,
@@ -559,4 +659,10 @@ def evaluate_event(
         reason_codes=reason_codes,
         candidates=validated_candidates,
         repeat_score=repeat_score,
+        observed_entry_id=observed_entry_id,
+        module_key=module_key,
+        workflow_key=workflow_key,
+        related_api_ids=related_api_ids,
+        intent_summary=intent_summary,
+        intent_memory_type=intent_memory_type,
     )

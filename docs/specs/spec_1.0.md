@@ -297,10 +297,43 @@ It answers:
 * Which fields may be sent to the model?
 * Which dedup and conflict hints apply?
 
-### 8.2 Required Fields
+### 8.2 Authoring Model
 
-Each API ontology entry shall include:
+v1 authoring uses one published **API Ontology Package** per config snapshot.
 
+The authoring package contains:
+
+* `modules[]`
+* `workflows[]`
+
+`modules[]` group related APIs by family or domain so operators can maintain large API surfaces without one monolithic flat list.
+
+`workflows[]` define cross-API relationships and user-task intent inference. They describe how APIs belong together as one task, which APIs are related context, and which intent memory type should be created or updated when an observed API event participates in that workflow.
+
+At publish time, the package compiles into runtime indexes:
+
+* flat API match index
+* API-to-module map
+* API-to-workflow map
+* relationship edge index
+* workflow intent inference rules
+
+The runtime still resolves one published `api_ontology_document_id` per snapshot. The packaging change affects authoring and compilation, not the top-level snapshot shape.
+
+Legacy flat `entries[]` authoring is accepted as a compatibility input for v1 migration, but the runtime must compile it into an implicit default module with no workflows.
+
+### 8.3 Module Fields
+
+Each API module shall include:
+
+* `module_key`
+* `title`
+* `description`
+* `entries[]`
+
+Each API entry inside a module shall include:
+
+* `entry_id`
 * `api_name`
 * `enabled`
 * `event_match`
@@ -329,7 +362,9 @@ Each API ontology entry shall include:
 * `tenant_override_allowed`
 * `notes`
 
-### 8.2.1 Event Matching and Payload Shaping
+`entry_id` must be stable across document revisions so workflows and inspect surfaces can reference APIs without depending on mutable route text or display labels.
+
+### 8.3.1 Event Matching and Payload Shaping
 
 `event_match` defines how an ontology entry binds to an incoming event envelope. At minimum it should support:
 
@@ -350,7 +385,35 @@ Each API ontology entry shall include:
 
 `POST /v1/events/ingest` accepts redacted summaries, structured selected fields, and optional artifact references only. Raw request/response bodies are optional evidence artifacts and are not accepted as direct policy-layer input.
 
-### 8.3 Capability Families
+### 8.4 Workflow Fields
+
+Each workflow definition shall include:
+
+* `workflow_key`
+* `title`
+* `description`
+* `participant_entry_ids`
+* `relationship_edges`
+* `intent_memory_type`
+* `default_intent_summary`
+
+Optional workflow intent behavior may include:
+
+* `intent_rules[]`
+
+Each `intent_rule` binds one or more observed API entry ids to a natural-language summary used for durable active intent memory.
+
+Relationship edges must reference known `entry_id` values and use one of the supported edge types:
+
+* `PRECEDES`
+* `READS_AFTER_WRITE`
+* `ENABLES`
+* `COMPENSATES`
+* `ALTERNATIVE_TO`
+
+The runtime must treat related APIs as contextual references only. Unobserved related APIs must not be persisted as if they were executed events.
+
+### 8.5 Capability Families
 
 At minimum, v1 supports:
 
@@ -363,7 +426,7 @@ At minimum, v1 supports:
 * `DELETE_FORGET`
 * `UNKNOWN`
 
-### 8.4 Default Actions
+### 8.6 Default Actions
 
 Supported default actions:
 
@@ -373,92 +436,337 @@ Supported default actions:
 * `UPSERT`
 * `FORGET`
 
-### 8.5 Example: API Ontology Entry
+### 8.7 Example: API Ontology Package
 
 ```yaml
-api_name: profile.updateAddress
-enabled: true
-event_match:
-  source_system: profile_service
-  http_method: POST
-  route_template: /v1/profile/address
-capability_family: PROFILE_WRITE
-method_semantics: WRITE
-domain: profile
-description: User explicitly updates their primary address
-request_field_selectors:
-  - $.address
-response_field_selectors:
-  - $.normalized_address
-normalization_rules:
-  primary_fact_source: response_then_request
-evidence_capture_policy:
-  request: summary_plus_artifact_ref
-  response: summary_only
-candidate_memory_types:
-  - profile.primary_address
-default_action: UPSERT
-repeat_policy: BYPASS
-sensitivity_hint: S2_PERSONAL
-source_trust: 100
-source_precedence_key: explicit_user_write
-extractors:
-  - address_parser
-llm_usage_mode: DISABLED
-prompt_template_key: null
-llm_allowed_field_paths: []
-llm_blocked_field_paths: []
-relation_templates:
-  - USER_HAS_PRIMARY_ADDRESS
-dedup_strategy_hint: EXACT_SLOT
-conflict_strategy_hint: SUPERSEDE_BY_PRECEDENCE
-tenant_override_allowed: true
-notes: Explicit user write. Should bypass both frequency gate and model escalation.
+document_name: Commerce API Ontology
+modules:
+  - module_key: orders.lifecycle
+    title: Orders lifecycle
+    description: APIs involved in the order creation flow.
+    entries:
+      - entry_id: order.register
+        api_name: order.register
+        enabled: true
+        event_match:
+          source_system: order_service
+          http_method: POST
+          route_template: /v1/orders
+        capability_family: ENTITY_UPSERT
+        method_semantics: WRITE
+        domain: orders
+        description: User registers a new order.
+        request_field_selectors:
+          - $.order_id
+          - $.customer
+          - $.domain
+        response_field_selectors:
+          - $.normalized_order_id
+        normalization_rules:
+          primary_fact_source: request_then_response
+        evidence_capture_policy:
+          request: summary_only
+          response: summary_only
+        candidate_memory_types:
+          - relationship.customer
+        default_action: UPSERT
+        repeat_policy: BYPASS
+        sensitivity_hint: S2_PERSONAL
+        source_trust: 90
+        source_precedence_key: structured_business_write
+        extractors:
+          - customer_parser
+        llm_usage_mode: ASSIST
+        prompt_template_key: memory.hybrid.ingest.v1
+        llm_allowed_field_paths:
+          - $.normalized_fields.customer
+          - $.normalized_fields.domain
+        llm_blocked_field_paths: []
+        relation_templates:
+          - relationship.customer
+        dedup_strategy_hint: ORDER_CUSTOMER_PAIR
+        conflict_strategy_hint: SUPERSEDE_BY_PRECEDENCE
+        tenant_override_allowed: true
+        notes: Create-order anchor for workflow intent.
+      - entry_id: order.get
+        api_name: order.get
+        enabled: true
+        event_match:
+          source_system: order_service
+          http_method: GET
+          route_template: /v1/orders/{order_id}
+        capability_family: CONTENT_READ
+        method_semantics: READ
+        domain: orders
+        description: User retrieves a previously created order.
+        request_field_selectors:
+          - $.order_id
+        response_field_selectors:
+          - $.order_status
+        normalization_rules:
+          primary_fact_source: request_then_response
+        evidence_capture_policy:
+          request: summary_only
+          response: summary_only
+        candidate_memory_types:
+          - interest.topic
+        default_action: OBSERVE
+        repeat_policy: REQUIRED
+        sensitivity_hint: S1_INTERNAL
+        source_trust: 40
+        source_precedence_key: repeated_behavioral_signal
+        extractors:
+          - topic_extractor
+        llm_usage_mode: DISABLED
+        prompt_template_key: null
+        llm_allowed_field_paths: []
+        llm_blocked_field_paths: []
+        relation_templates: []
+        dedup_strategy_hint: ORDER_LOOKUP
+        conflict_strategy_hint: NO_DIRECT_CONFLICT
+        tenant_override_allowed: true
+        notes: Read path for the active order workflow.
+  - module_key: orders.payment
+    title: Orders payment
+    description: APIs involved in charging and refunding an order.
+    entries:
+      - entry_id: payment.charge
+        api_name: payment.charge
+        enabled: true
+        event_match:
+          source_system: payment_service
+          http_method: POST
+          route_template: /v1/payments/charge
+        capability_family: ENTITY_UPSERT
+        method_semantics: WRITE
+        domain: payments
+        description: User charges the active order.
+        request_field_selectors:
+          - $.customer
+          - $.domain
+        response_field_selectors:
+          - $.charge_status
+        normalization_rules:
+          primary_fact_source: request_then_response
+        evidence_capture_policy:
+          request: summary_only
+          response: summary_only
+        candidate_memory_types:
+          - relationship.customer
+        default_action: UPSERT
+        repeat_policy: BYPASS
+        sensitivity_hint: S2_PERSONAL
+        source_trust: 85
+        source_precedence_key: structured_business_write
+        extractors:
+          - customer_parser
+        llm_usage_mode: DISABLED
+        prompt_template_key: null
+        llm_allowed_field_paths: []
+        llm_blocked_field_paths: []
+        relation_templates:
+          - relationship.customer
+        dedup_strategy_hint: PAYMENT_ANCHOR
+        conflict_strategy_hint: SUPERSEDE_BY_PRECEDENCE
+        tenant_override_allowed: true
+        notes: Confirms payment progress for the checkout workflow.
+      - entry_id: payment.refund
+        api_name: payment.refund
+        enabled: true
+        event_match:
+          source_system: payment_service
+          http_method: POST
+          route_template: /v1/payments/refund
+        capability_family: ENTITY_UPSERT
+        method_semantics: WRITE
+        domain: payments
+        description: User requests a refund for a charged order.
+        request_field_selectors:
+          - $.customer
+          - $.domain
+        response_field_selectors:
+          - $.refund_status
+        normalization_rules:
+          primary_fact_source: request_then_response
+        evidence_capture_policy:
+          request: summary_only
+          response: summary_only
+        candidate_memory_types:
+          - relationship.customer
+        default_action: UPSERT
+        repeat_policy: BYPASS
+        sensitivity_hint: S2_PERSONAL
+        source_trust: 85
+        source_precedence_key: structured_business_write
+        extractors:
+          - customer_parser
+        llm_usage_mode: DISABLED
+        prompt_template_key: null
+        llm_allowed_field_paths: []
+        llm_blocked_field_paths: []
+        relation_templates:
+          - relationship.customer
+        dedup_strategy_hint: PAYMENT_REFUND
+        conflict_strategy_hint: SUPERSEDE_BY_PRECEDENCE
+        tenant_override_allowed: true
+        notes: Compensating event for checkout.
+workflows:
+  - workflow_key: order_checkout
+    title: Order checkout
+    description: The user is placing an order and completing payment.
+    participant_entry_ids:
+      - order.register
+      - order.get
+      - payment.charge
+      - payment.refund
+    relationship_edges:
+      - from_entry_id: order.register
+        to_entry_id: order.get
+        edge_type: READS_AFTER_WRITE
+      - from_entry_id: order.register
+        to_entry_id: payment.charge
+        edge_type: ENABLES
+      - from_entry_id: payment.refund
+        to_entry_id: payment.charge
+        edge_type: COMPENSATES
+    intent_memory_type: intent.user_goal
+    default_intent_summary: User is working on an order checkout workflow.
+    intent_rules:
+      - observed_entry_ids:
+          - order.register
+        summary: User is trying to place an order and complete payment.
+      - observed_entry_ids:
+          - payment.charge
+        summary: User is completing payment for an active order.
+      - observed_entry_ids:
+          - payment.refund
+        summary: User is correcting a previous payment and requesting a refund.
 ```
 
-### 8.6 Example: Low-Trust Read API
+### 8.8 Example: Legacy Single Entry Compatibility
 
 ```yaml
-api_name: search.webSearch
-enabled: true
-event_match:
-  source_system: search_service
-  http_method: GET
-  route_template: /v1/search
-capability_family: SEARCH_READ
-method_semantics: READ
-domain: search
-description: General web search request
-request_field_selectors:
-  - $.query
-response_field_selectors:
-  - $.result_topics
-normalization_rules:
-  primary_fact_source: request_then_response
-evidence_capture_policy:
-  request: summary_only
-  response: none
-candidate_memory_types:
-  - interest.topic
-default_action: OBSERVE
-repeat_policy: REQUIRED
-sensitivity_hint: S1_INTERNAL
-source_trust: 30
-source_precedence_key: weak_free_text_inference
-extractors:
-  - topic_extractor
-llm_usage_mode: ASSIST
-prompt_template_key: memory.hybrid.search.v1
-llm_allowed_field_paths:
-  - $.normalized_fields.query
-  - $.normalized_fields.result_topics
-llm_blocked_field_paths: []
-relation_templates: []
-dedup_strategy_hint: TOPIC_SCORE
-conflict_strategy_hint: NO_DIRECT_CONFLICT
-tenant_override_allowed: true
-notes: Never persist on one-off events.
+entries:
+  - entry_id: profile.updateAddress
+    api_name: profile.updateAddress
+    enabled: true
+    event_match:
+      source_system: profile_service
+      http_method: POST
+      route_template: /v1/profile/address
+    capability_family: PROFILE_WRITE
+    method_semantics: WRITE
+    domain: profile
+    description: User explicitly updates their primary address
+    request_field_selectors:
+      - $.address
+    response_field_selectors:
+      - $.normalized_address
+    normalization_rules:
+      primary_fact_source: response_then_request
+    evidence_capture_policy:
+      request: summary_plus_artifact_ref
+      response: summary_only
+    candidate_memory_types:
+      - profile.primary_address
+    default_action: UPSERT
+    repeat_policy: BYPASS
+    sensitivity_hint: S2_PERSONAL
+    source_trust: 100
+    source_precedence_key: explicit_user_write
+    extractors:
+      - address_parser
+    llm_usage_mode: DISABLED
+    prompt_template_key: null
+    llm_allowed_field_paths: []
+    llm_blocked_field_paths: []
+    relation_templates:
+      - USER_HAS_PRIMARY_ADDRESS
+    dedup_strategy_hint: EXACT_SLOT
+    conflict_strategy_hint: SUPERSEDE_BY_PRECEDENCE
+    tenant_override_allowed: true
+    notes: Explicit user write. Should bypass both frequency gate and model escalation.
 ```
+
+### 8.9 Example: Low-Trust Read API
+
+```yaml
+entries:
+  - entry_id: search.webSearch
+    api_name: search.webSearch
+    enabled: true
+    event_match:
+      source_system: search_service
+      http_method: GET
+      route_template: /v1/search
+    capability_family: SEARCH_READ
+    method_semantics: READ
+    domain: search
+    description: General web search request
+    request_field_selectors:
+      - $.query
+    response_field_selectors:
+      - $.result_topics
+    normalization_rules:
+      primary_fact_source: request_then_response
+    evidence_capture_policy:
+      request: summary_only
+      response: none
+    candidate_memory_types:
+      - interest.topic
+    default_action: OBSERVE
+    repeat_policy: REQUIRED
+    sensitivity_hint: S1_INTERNAL
+    source_trust: 30
+    source_precedence_key: weak_free_text_inference
+    extractors:
+      - topic_extractor
+    llm_usage_mode: ASSIST
+    prompt_template_key: memory.hybrid.search.v1
+    llm_allowed_field_paths:
+      - $.normalized_fields.query
+      - $.normalized_fields.result_topics
+    llm_blocked_field_paths: []
+    relation_templates: []
+    dedup_strategy_hint: TOPIC_SCORE
+    conflict_strategy_hint: NO_DIRECT_CONFLICT
+    tenant_override_allowed: true
+    notes: Never persist on one-off events.
+```
+
+### 8.10 Workflow Intent Persistence
+
+When an observed API entry participates in a workflow and the event is ultimately persisted, the runtime shall:
+
+* resolve the owning `module_key`
+* resolve the matching `workflow_key`
+* attach `related_api_ids` from direct workflow edges
+* derive `intent_summary` from the workflow definition
+* write a durable active intent memory using the workflow `intent_memory_type`
+
+The active intent memory payload must include:
+
+* `summary`
+* `workflow_key`
+* `observed_api_name`
+* `related_api_ids`
+* `evidence_event_ids`
+
+The durable intent memory uses normal Memory Ontology rules. It must be traceable to evidence and `config_snapshot_id` like all other persisted memory records.
+
+### 8.11 Workflow Intent Evaluation Contract
+
+Synthetic evaluation for workflow intent must use a hybrid gate:
+
+* deterministic assertions for schema validity, publication, rollback, traceability, and persistence
+* an AI judge for natural-language intent quality and workflow relationship context quality
+
+The AI judge must verify at minimum:
+
+* the inferred intent is faithful to the observed API and the published workflow definition
+* unobserved related APIs are treated as contextual references only, not as executed facts
+* the summary remains specific and concise
+* the related API context is consistent with workflow participants and relationship edges
 
 ---
 
@@ -654,6 +962,21 @@ model_inference:
   low_confidence_threshold: 0.60
   allow_low_confidence_persist: true
   log_reasoning_summary: true
+  provider_gate:
+    default_provider: ollama
+    rules:
+      - capability_families:
+          - SEARCH_READ
+          - CONTENT_READ
+        llm_usage_modes:
+          - ASSIST
+          - REQUIRE
+        memory_types:
+          - interest.topic
+        max_sensitivity: S1_INTERNAL
+        provider_order:
+          - ollama
+          - openai
 conflict_windows:
   typo_correction_minutes: 5
 embedding_rules:
@@ -678,6 +1001,30 @@ The Policy Layer consumes:
 * optional prior memory lookup
 * tenant context
 * optional redacted raw request/response artifact references
+
+### 11.1.2 Internal Inference Provider Gate
+
+The internal model-assisted inference provider is selected inside the active `Policy Profile`.
+
+Provider choice is an internal Memory Engine concern. External clients remain provider-agnostic and do not select the model provider per request.
+
+`model_inference.provider_gate` must define:
+
+* `default_provider`
+* ordered `rules`
+
+Each rule may match on:
+
+* API capability family
+* API entry `llm_usage_mode`
+* candidate memory types
+* maximum allowed candidate sensitivity
+
+Each rule yields an ordered provider preference list. The runtime must try providers in order and may fall back to a later provider if an earlier provider fails.
+
+The provider registry itself is environment configuration, not published runtime config. Published policy chooses among registered providers by id.
+
+For local and test evaluation, the required live Ollama inference model is `gemma4:e4b`. The required local and test embedding model remains `qwen3-embedding:0.6b` unless a newer approved spec supersedes it.
 
 ### 11.1.1 Normalized Event Envelope
 
@@ -940,6 +1287,8 @@ The system shall store:
 * **model inference traces** as auditable decision artifacts
 * **embeddings** as retrieval indexes in PostgreSQL via pgvector
 
+Embeddings are deterministic at process startup from the active embedding profile in environment settings. They are not selected per request by policy.
+
 ### 13.3 Retrieval Strategy
 
 The retrieval planner must use:
@@ -948,6 +1297,8 @@ The retrieval planner must use:
 2. relation lookup
 3. vector lookup
 4. reranking
+
+Vector retrieval must resolve embeddings through the active embedding profile. A memory may have multiple embedding index rows over time, keyed by provider and model, but a single query uses one startup-selected embedding profile for both query embedding generation and vector lookup.
 
 ### 13.4 Reranking
 
@@ -1126,13 +1477,25 @@ Use separate logical schemas:
 * confidence
 * importance
 * sensitivity
-* embedding vector nullable
 * valid_from
 * valid_to nullable
 * supersedes nullable
 * config_snapshot_id
 * created_at
 * updated_at
+
+`runtime.memory_embeddings`
+
+* memory_id
+* provider
+* model_name
+* dimensions
+* embedding vector
+* text_hash
+* created_at
+* updated_at
+
+Uniqueness must be enforced on `(memory_id, provider, model_name)`.
 
 `runtime.relations`
 
@@ -1203,8 +1566,8 @@ There shall be two Python services sharing the same codebase:
 ### 15.3 Worker Responsibilities
 
 * asynchronous event processing
-* model-assisted candidate extraction and memory-worthiness recommendation
-* embedding generation
+* model-assisted candidate extraction and memory-worthiness recommendation through the policy-selected provider gate
+* embedding generation through the startup-selected embedding profile
 * conflict resolution jobs
 * replay jobs
 * cleanup/TTL jobs
@@ -1586,6 +1949,15 @@ Result:
 19. uncertain model output defaults to `OBSERVE` under the default v1 policy.
 20. raw request/response payloads are never forwarded to the model unless allowed by ontology field-path rules and redaction policy.
 21. the legacy flat ingest payload with top-level `structured_fields`, `request_summary`, or `response_summary` is rejected on `POST /v1/events/ingest`.
+22. the active `Policy Profile` can choose between registered internal inference providers without changing the external ingest API contract.
+23. the runtime records which inference provider and model were used for each model-assisted decision.
+24. embeddings are stored in per-model index rows and retrieval uses the startup-selected embedding profile consistently for write, backfill, and query-time vector search.
+25. local and test evaluation fails fast when the required Ollama service, `gemma4:e4b` inference model, or `qwen3-embedding:0.6b` embedding model are unavailable.
+26. API Ontology authoring supports grouped modules and workflow relationship definitions inside one published API ontology package document.
+27. when a persisted API event participates in a workflow, the runtime records `module_key`, `workflow_key`, `related_api_ids`, and `intent_summary` in the decision trace.
+28. the runtime creates or updates a durable active workflow intent memory without fabricating unobserved related API executions.
+29. rollback changes future workflow intent inference behavior without mutating historical event, evidence, or memory traces.
+30. workflow intent synthetic evaluation combines deterministic assertions with a live AI judge that checks summary fidelity, context-only treatment of unobserved related APIs, and workflow relationship consistency.
 
 ---
 
@@ -1669,15 +2041,6 @@ The final v1 design is:
 * PostgreSQL-only storage is a good v1 simplification, but very large embedding workloads may require later tuning or architecture changes.
 
 ---
-
-The control plane UI must also remain usable across phone, tablet, laptop, and desktop widths:
-
-* primary workspace content must stay reachable without scrolling through a full-height navigation rail first
-* navigation may collapse into a drawer or compact menu on smaller viewports, but operators must still be able to switch sections without losing context
-* multi-panel authoring layouts must not collapse into unreadable narrow columns at intermediate widths; nested side rails should stack before fields or action buttons become unusable
-* mobile form controls must keep editable text at a readable touch-safe size and avoid sub-16px input text that triggers browser focus zoom
-* stacked mobile actions must keep touch targets at or above common 44px minimums, and labels must scale with the surrounding component density
-* dense tables and audit views must preserve access to all columns on smaller screens via responsive stacking or horizontal scrolling
 
 ## Confidence
 

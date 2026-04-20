@@ -9,6 +9,7 @@ import type {
   SimulationRun,
   ValidationRun,
 } from "@/lib/api/types";
+import { parseApiOntologyPackage } from "@/lib/config-editor";
 
 type RequestOptions = RequestInit & {
   skipAuth?: boolean;
@@ -120,6 +121,11 @@ type BackendDecision = {
   model_recommendation?: string | null;
   model_confidence?: number | null;
   reasoning_summary?: string | null;
+  observed_entry_id?: string | null;
+  module_key?: string | null;
+  workflow_key?: string | null;
+  related_api_ids?: string[];
+  intent_summary?: string | null;
   timestamp: string;
 };
 
@@ -155,6 +161,7 @@ type BackendAudit = {
   document_name?: string;
   scope?: string;
   tenant?: string;
+  tenant_id?: string;
   environment?: string;
   snapshot_id?: string;
   before_checksum?: string;
@@ -218,6 +225,15 @@ type PublishRequest = {
 
 type RollbackRequest = {
   snapshot_id: string;
+};
+
+type ValidateRequest = {
+  config_id?: string;
+  api_ontology_document_id?: string;
+  memory_ontology_document_id?: string;
+  policy_profile_document_id?: string;
+  environment?: string;
+  tenant_id?: string | null;
 };
 
 type ImportPayload = {
@@ -375,6 +391,7 @@ function toConfigDocument(data: BackendConfig, previousYaml?: string): ConfigDoc
     summary: data.summary ?? deriveSummary(data.name, data.definition_yaml),
     yaml: data.definition_yaml,
     definitionJson: data.definition_json,
+    apiOntologyPackage: data.kind === "api_ontology" ? parseApiOntologyPackage(data.definition_json) : null,
     releaseNotes: data.release_notes ?? undefined,
     snapshotId: data.snapshot_id ?? null,
     snapshotHash: data.snapshot_hash ?? null,
@@ -411,27 +428,36 @@ function toConfigDocuments(records: BackendConfig[]): ConfigDocument[] {
 }
 
 function validationChecksFromIssues(issues: BackendValidationIssue[]) {
+  if (issues.every((issue) => issue.severity === "info")) {
+    return [{ name: "validation", status: "pass" as const, detail: "No validation issues detected." }];
+  }
   if (!issues.length) {
     return [{ name: "validation", status: "pass" as const, detail: "No validation issues detected." }];
   }
   return issues.map((issue) => ({
-    name: `${issue.code} @ ${issue.path}`,
-    status: issue.severity === "error" ? ("fail" as const) : ("warn" as const),
+    name: issue.code === "validation.pass" ? "validation" : `${issue.code} @ ${issue.path}`,
+    status:
+      issue.severity === "error"
+        ? ("fail" as const)
+        : issue.severity === "info"
+          ? ("pass" as const)
+          : ("warn" as const),
     detail: issue.message,
   }));
 }
 
 function toValidationRun(result: BackendValidationResponse, configId: string): ValidationRun {
   const issues = result.issues.filter((issue) => !issue.document_id || issue.document_id === configId);
+  const actionableIssues = issues.filter((issue) => issue.severity !== "info");
   return {
     id: `validation-${configId}`,
     documentId: configId,
     documentName: configId,
     status: result.status,
     timestamp: new Date().toISOString(),
-    summary: issues.length ? `${issues.length} validation issue(s) reported.` : "No validation issues detected.",
+    summary: actionableIssues.length ? `${actionableIssues.length} validation issue(s) reported.` : "No validation issues detected.",
     checks: validationChecksFromIssues(issues),
-    issues: issues.map((issue) => issue.message),
+    issues: actionableIssues.map((issue) => issue.message),
   };
 }
 
@@ -447,11 +473,17 @@ function groupValidationRuns(issues: BackendValidationIssue[]): ValidationRun[] 
     id: `validation-${documentId}`,
     documentId,
     documentName: documentId,
-    status: documentIssues.some((issue) => issue.severity === "error") ? "fail" : "warn",
+    status: documentIssues.some((issue) => issue.severity === "error")
+      ? "fail"
+      : documentIssues.some((issue) => issue.severity === "warn")
+        ? "warn"
+        : "pass",
     timestamp: new Date().toISOString(),
-    summary: `${documentIssues.length} validation issue(s) recorded.`,
+    summary: documentIssues.some((issue) => issue.severity !== "info")
+      ? `${documentIssues.filter((issue) => issue.severity !== "info").length} validation issue(s) recorded.`
+      : "No validation issues detected.",
     checks: validationChecksFromIssues(documentIssues),
-    issues: documentIssues.map((issue) => issue.message),
+    issues: documentIssues.filter((issue) => issue.severity !== "info").map((issue) => issue.message),
   }));
 }
 
@@ -648,11 +680,26 @@ function toDecisionRecord(data: BackendDecision): DecisionRecord {
     modelRecommendation: data.model_recommendation ?? null,
     modelConfidence: data.model_confidence ?? null,
     reasoningSummary: data.reasoning_summary ?? null,
+    observedEntryId: data.observed_entry_id ?? null,
+    moduleKey: data.module_key ?? null,
+    workflowKey: data.workflow_key ?? null,
+    relatedApiIds: data.related_api_ids ?? [],
+    intentSummary: data.intent_summary ?? null,
     timestamp: data.timestamp,
   };
 }
 
 function toMemoryRecord(data: BackendMemory): MemoryRecord {
+  const workflowKey =
+    typeof data.payload.workflow_key === "string" ? data.payload.workflow_key : null;
+  const relatedApiIds = Array.isArray(data.payload.related_api_ids)
+    ? data.payload.related_api_ids.filter((item): item is string => typeof item === "string")
+    : [];
+  const evidenceEventIds = Array.isArray(data.payload.evidence_event_ids)
+    ? data.payload.evidence_event_ids.filter((item): item is string => typeof item === "string")
+    : [];
+  const observedApiName =
+    typeof data.payload.observed_api_name === "string" ? data.payload.observed_api_name : null;
   return {
     id: data.record_id,
     title: data.title,
@@ -675,11 +722,16 @@ function toMemoryRecord(data: BackendMemory): MemoryRecord {
     canonicalKey: data.canonical_key,
     reasonCodes: data.reason_codes,
     payload: data.payload,
+    workflowKey,
+    relatedApiIds,
+    observedApiName,
+    evidenceEventIds,
     timestamp: new Date().toISOString(),
   };
 }
 
 function toAuditRecord(data: BackendAudit): AuditRecord {
+  const normalizedAction = data.action.startsWith("config.") ? data.action.slice("config.".length) : data.action;
   return {
     id: data.id,
     actor: data.actor,
@@ -687,9 +739,9 @@ function toAuditRecord(data: BackendAudit): AuditRecord {
     documentKind: data.document_kind,
     documentVersion: data.document_version,
     documentName: data.document_name,
-    action: data.action,
+    action: normalizedAction,
     scope: data.scope,
-    tenant: data.tenant,
+    tenant: data.tenant ?? data.tenant_id,
     environment: data.environment,
     snapshotId: data.snapshot_id,
     beforeChecksum: data.before_checksum,
@@ -826,19 +878,19 @@ export const client = {
       return toConfigDocuments(normalizeArrayResponse<BackendConfig>(response));
     },
     async save(config: ConfigDocument) {
-      const body = {
+      const body: Record<string, unknown> = {
         name: config.name,
         scope: config.scope,
         tenant_id: config.tenant === "all" ? null : config.tenant,
-        environment: config.environment,
-        status: config.status,
-        summary: config.summary,
-        definition_yaml: config.yaml,
-        definition_json: config.definitionJson ?? safeJsonParse(config.yaml) ?? {},
         version: config.version,
         base_version: config.baseVersion ?? null,
-        release_notes: config.releaseNotes ?? "",
       };
+      if (typeof config.yaml === "string" && config.definitionJson === undefined) {
+        body.definition_yaml = config.yaml;
+      }
+      if (config.definitionJson !== undefined) {
+        body.definition_json = config.definitionJson;
+      }
       if (config.id) {
         const response = await request<BackendConfig>(`/v1/control/configs/${config.id}`, {
           method: "PUT",
@@ -876,6 +928,13 @@ export const client = {
         body: JSON.stringify({ config_id: configId }),
       });
       return toValidationRun(response, configId);
+    },
+    async validateBundle(requestPayload: ValidateRequest, focusDocumentId: string) {
+      const response = await request<BackendValidationResponse>("/v1/control/validate", {
+        method: "POST",
+        body: JSON.stringify(requestPayload),
+      });
+      return toValidationRun(response, focusDocumentId);
     },
     async simulate(configId: string, sampleEvent: string) {
       const response = await request<BackendSimulationResponse>("/v1/control/simulate", {
@@ -974,7 +1033,32 @@ export const client = {
       const response = await request<unknown>(`/v1/memory/decisions${search.toString() ? `?${search.toString()}` : ""}`, {
         method: "GET",
       });
-      return normalizeArrayResponse<BackendDecision>(response).map(toDecisionRecord);
+      const records = normalizeArrayResponse<BackendDecision>(response).map(toDecisionRecord);
+      return records.filter((record) => {
+        if (filters.status && record.status !== filters.status) return false;
+        if (filters.scope && record.scope !== filters.scope) return false;
+        if (filters.environment && record.environment !== filters.environment) return false;
+        if (filters.tenant && record.tenant !== filters.tenant) return false;
+        if (filters.kind && record.kind !== filters.kind) return false;
+        if (filters.query) {
+          const haystack = [
+            record.title,
+            record.reasonCode,
+            ...(record.reasonCodes ?? []),
+            record.sourceSystem ?? "",
+            record.routeTemplate ?? "",
+            record.moduleKey ?? "",
+            record.workflowKey ?? "",
+            record.intentSummary ?? "",
+            ...(record.relatedApiIds ?? []),
+            record.observedEntryId ?? "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (!haystack.includes(filters.query.toLowerCase())) return false;
+        }
+        return true;
+      });
     },
   },
   memories: {
@@ -1000,7 +1084,18 @@ export const client = {
         if (filters.environment && record.environment && record.environment !== filters.environment) return false;
         if (filters.tenant && record.tenant !== filters.tenant) return false;
         if (filters.query) {
-          const haystack = [record.title, record.summary, record.evidence, record.configSnapshotId].join(" ").toLowerCase();
+          const haystack = [
+            record.title,
+            record.summary,
+            record.evidence,
+            record.configSnapshotId,
+            record.workflowKey ?? "",
+            record.observedApiName ?? "",
+            ...(record.relatedApiIds ?? []),
+            ...(record.evidenceEventIds ?? []),
+          ]
+            .join(" ")
+            .toLowerCase();
           if (!haystack.includes(filters.query.toLowerCase())) return false;
         }
         return true;
@@ -1011,17 +1106,34 @@ export const client = {
     async list(filters: AuditFilters = {}) {
       const search = buildSearchParams({
         scope: filters.scope,
-        environment: filters.environment,
-        tenant: filters.tenant,
-        status: filters.status,
-        kind: filters.kind,
-        action: filters.action,
-        query: filters.query,
+        tenant_id: filters.tenant,
+        target_kind: filters.kind,
+        action: filters.action ? `config.${filters.action}` : undefined,
       });
-      const response = await request<unknown>(`/v1/audit/logs${search.toString() ? `?${search.toString()}` : ""}`, {
+      const response = await request<unknown>(`/v1/control/audit-log${search.toString() ? `?${search.toString()}` : ""}`, {
         method: "GET",
       });
-      return normalizeArrayResponse<BackendAudit>(response).map(toAuditRecord);
+      return normalizeArrayResponse<BackendAudit>(response)
+        .map(toAuditRecord)
+        .filter((record) => {
+          if (filters.environment && record.environment !== filters.environment) return false;
+          if (filters.query) {
+            const haystack = [
+              record.actor,
+              record.role,
+              record.action,
+              record.documentKind,
+              record.documentName,
+              record.snapshotId,
+              record.diffRef,
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase();
+            if (!haystack.includes(filters.query.toLowerCase())) return false;
+          }
+          return true;
+        });
     },
   },
 };

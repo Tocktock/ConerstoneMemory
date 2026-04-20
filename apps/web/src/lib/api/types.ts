@@ -4,6 +4,82 @@ export type ConfigStatus = "draft" | "validated" | "approved" | "published" | "a
 
 export type DecisionStatus = "accepted" | "overridden" | "blocked" | "conflicted";
 
+export interface APIOntologyEntry {
+  entry_id: string;
+  module_key?: string;
+  api_name: string;
+  enabled: boolean;
+  capability_family: string;
+  method_semantics: string;
+  domain: string;
+  description: string;
+  candidate_memory_types: string[];
+  default_action: string;
+  repeat_policy: string;
+  sensitivity_hint: string;
+  source_trust: number;
+  source_precedence_key: string;
+  extractors: string[];
+  relation_templates: string[];
+  dedup_strategy_hint: string;
+  conflict_strategy_hint: string;
+  tenant_override_allowed: boolean;
+  event_match: {
+    source_system: string;
+    http_method: string;
+    route_template: string;
+  };
+  request_field_selectors: string[];
+  response_field_selectors: string[];
+  normalization_rules: {
+    primary_fact_source: string;
+  };
+  evidence_capture_policy: {
+    request: string;
+    response: string;
+  };
+  llm_usage_mode: string;
+  prompt_template_key?: string | null;
+  llm_allowed_field_paths: string[];
+  llm_blocked_field_paths: string[];
+  notes?: string | null;
+}
+
+export interface APIOntologyModule {
+  module_key: string;
+  title: string;
+  description: string;
+  entries: APIOntologyEntry[];
+}
+
+export interface APIOntologyWorkflowEdge {
+  from_entry_id: string;
+  to_entry_id: string;
+  edge_type: string;
+}
+
+export interface APIOntologyIntentRule {
+  observed_entry_ids: string[];
+  summary: string;
+}
+
+export interface APIOntologyWorkflowDefinition {
+  workflow_key: string;
+  title: string;
+  description: string;
+  participant_entry_ids: string[];
+  relationship_edges: APIOntologyWorkflowEdge[];
+  intent_memory_type: string;
+  default_intent_summary: string;
+  intent_rules: APIOntologyIntentRule[];
+}
+
+export interface APIOntologyPackage {
+  document_name: string;
+  modules: APIOntologyModule[];
+  workflows: APIOntologyWorkflowDefinition[];
+}
+
 export interface Session {
   token: string;
   user: {
@@ -31,6 +107,7 @@ export interface ConfigDocument {
   summary: string;
   yaml: string;
   definitionJson?: Record<string, unknown>;
+  apiOntologyPackage?: APIOntologyPackage | null;
   releaseNotes?: string;
   snapshotId?: string | null;
   snapshotHash?: string | null;
@@ -134,6 +211,11 @@ export interface DecisionRecord {
   modelRecommendation?: string | null;
   modelConfidence?: number | null;
   reasoningSummary?: string | null;
+  observedEntryId?: string | null;
+  moduleKey?: string | null;
+  workflowKey?: string | null;
+  relatedApiIds?: string[];
+  intentSummary?: string | null;
   timestamp: string;
 }
 
@@ -155,6 +237,10 @@ export interface MemoryRecord {
   canonicalKey?: string;
   reasonCodes?: string[];
   payload?: Record<string, unknown>;
+  workflowKey?: string | null;
+  relatedApiIds?: string[];
+  observedApiName?: string | null;
+  evidenceEventIds?: string[];
   timestamp: string;
 }
 
