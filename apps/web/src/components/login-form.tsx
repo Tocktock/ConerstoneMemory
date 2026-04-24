@@ -31,9 +31,9 @@ export function LoginForm() {
     <Card className="space-y-6 p-6 sm:p-7">
       <div className="space-y-2">
         <div className="label">Operator access</div>
-        <h2 className="text-2xl font-semibold tracking-tight text-white">Sign in to the console</h2>
+        <h2 className="text-2xl font-semibold tracking-tight text-white text-balance">Sign in to the console</h2>
         <p className="text-sm leading-6 text-slate-300">
-          Requests go directly to the configured live backend. Authentication errors stay visible in the form instead of being hidden behind fallback behavior.
+          Requests go directly to the configured backend. Authentication errors stay in the form so the boundary is easy to diagnose.
         </p>
       </div>
       <form className="space-y-4" onSubmit={submit}>
@@ -61,19 +61,21 @@ export function LoginForm() {
         </Button>
       </form>
       {message ? (
-        <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 p-4 text-sm text-rose-100">{message}</div>
+        <div className="rounded-xl border border-rose-300/28 bg-rose-400/12 p-4 text-sm leading-6 text-rose-100">{message}</div>
       ) : null}
       <div className="panel-inset space-y-3 p-4 text-sm text-slate-300">
         <div className="flex flex-wrap gap-2">
-          <span className="inline-flex rounded-md border border-[color:var(--color-line-strong)] bg-[color:var(--color-card-accent)] px-2.5 py-1 text-xs font-medium text-blue-100">
+          <span className="inline-flex rounded-md border border-cyan-300/26 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-200">
             Live backend only
           </span>
-          <span className="inline-flex rounded-md border border-[color:var(--color-line)] bg-[color:var(--color-card-inset)] px-2.5 py-1 text-xs font-medium text-slate-200">
+          <span className="inline-flex rounded-md border border-[color:var(--color-line-subtle)] bg-white/[0.035] px-2.5 py-1 text-xs font-semibold text-slate-300">
             Seeded roles available
           </span>
         </div>
         <p>If the service is unavailable, the form shows the request error directly so operators can stop and fix the boundary first.</p>
-        <p>Seeded local passwords match the role name: `viewer`, `editor`, `approver`, `operator`, or `admin`.</p>
+        <p>
+          Seeded local passwords match the role name: <code>viewer</code>, <code>editor</code>, <code>approver</code>, <code>operator</code>, or <code>admin</code>.
+        </p>
       </div>
     </Card>
   );

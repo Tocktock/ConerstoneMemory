@@ -707,14 +707,13 @@ function ApiOntologyPackageEditor({
 
   const availableEntryIds = allEntries.map((entry) => entry.entry_id);
   const packageEntryCount = allEntries.length;
-  const relationshipEdgeCount = workflows.reduce((count, workflow) => count + workflow.relationship_edges.length, 0);
   const activeFocusSummary = currentEntry
     ? joinItems([currentEntry.entry_id, currentEntry.event_match.http_method, currentEntry.event_match.route_template])
     : "Select an API entry to inspect the current editing lane.";
 
   return (
     <div className="space-y-4">
-      <div className="panel space-y-5 p-5 sm:p-6">
+      <div className="border-b border-[color:var(--color-line-subtle)] pb-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0 space-y-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -730,43 +729,13 @@ function ApiOntologyPackageEditor({
               </p>
             </div>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 text-sm">
             <Badge>{modules.length} modules</Badge>
             <Badge>{packageEntryCount} API entries</Badge>
             <Badge>{workflows.length} workflows</Badge>
-            <Badge>{relationshipEdgeCount} edges</Badge>
           </div>
         </div>
-        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-[minmax(0,1.45fr)_repeat(3,minmax(0,1fr))]">
-          <div className="panel-inset space-y-2 p-4 lg:col-span-2 2xl:col-span-1">
-            <div className="label">Active focus</div>
-            <div className="text-sm font-semibold text-white">
-              {currentModule?.title || currentModule?.module_key || "No module selected"}
-            </div>
-            <p className="text-xs leading-5 text-slate-400">{activeFocusSummary}</p>
-          </div>
-          <div className="panel-inset space-y-2 p-4">
-            <div className="label">Modules</div>
-            <div className="text-2xl font-semibold text-white">{modules.length}</div>
-            <p className="text-xs leading-5 text-slate-400">Families that organize the authoring surface.</p>
-          </div>
-          <div className="panel-inset space-y-2 p-4">
-            <div className="label">Workflows</div>
-            <div className="text-2xl font-semibold text-white">{workflows.length}</div>
-            <p className="text-xs leading-5 text-slate-400">User-task definitions across related APIs.</p>
-          </div>
-          <div className="panel-inset space-y-2 p-4">
-            <div className="label">Current workflow</div>
-            <div className="text-sm font-semibold text-white">
-              {currentWorkflow?.title || currentWorkflow?.workflow_key || "No workflow selected"}
-            </div>
-            <p className="text-xs leading-5 text-slate-400">
-              {currentWorkflow
-                ? `${currentWorkflow.participant_entry_ids.length} participants in focus`
-                : "Choose a workflow to inspect intent rules and relationship edges."}
-            </p>
-          </div>
-        </div>
+        <p className="mt-3 text-sm leading-6 text-slate-400">{activeFocusSummary}</p>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
@@ -844,19 +813,17 @@ function ApiOntologyPackageEditor({
             </div>
           </div>
 
-          <div className="panel-muted space-y-4 p-4 sm:p-5">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="label">Workflow map</div>
-                <div className="mt-2 text-sm font-semibold text-white">Connect related APIs into one user task.</div>
-              </div>
+          <DisclosurePanel
+            title="Workflow map"
+            description="Connect APIs into user-task flows after the entry model is clear."
+          >
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-white">Workflow definitions</div>
               <Button variant="secondary" onClick={addWorkflow}>
                 Add workflow
               </Button>
             </div>
-            <p className="text-xs leading-5 text-slate-400">
-              Workflows come after entry quality. Keep them as readable operator stories instead of raw graph maintenance.
-            </p>
             <div className="space-y-2">
               {workflows.map((workflow) => (
                 <button
@@ -879,7 +846,8 @@ function ApiOntologyPackageEditor({
             <Button variant="danger" onClick={removeWorkflow} disabled={!currentWorkflow}>
               Remove workflow
             </Button>
-          </div>
+            </div>
+          </DisclosurePanel>
         </div>
 
         <div className="min-w-0 space-y-4">
@@ -948,42 +916,6 @@ function ApiOntologyPackageEditor({
                     })} />
                   </div>
                   <div>
-                    <Label>Domain</Label>
-                    <Input value={currentEntry.domain} onChange={(event) => updateEntry((entry) => {
-                      entry.domain = event.target.value;
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Enabled</Label>
-                    <Select value={String(currentEntry.enabled)} onChange={(event) => updateEntry((entry) => {
-                      entry.enabled = event.target.value === "true";
-                    })}>
-                      <option value="true">true</option>
-                      <option value="false">false</option>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Capability family</Label>
-                    <Select value={currentEntry.capability_family} onChange={(event) => updateEntry((entry) => {
-                      entry.capability_family = event.target.value;
-                    })}>
-                      {[
-                        "PROFILE_WRITE",
-                        "PREFERENCE_SET",
-                        "RELATION_WRITE",
-                        "ENTITY_UPSERT",
-                        "CONTENT_READ",
-                        "SEARCH_READ",
-                        "DELETE_FORGET",
-                        "UNKNOWN",
-                      ].map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div>
                     <Label>Method semantics</Label>
                     <Select value={currentEntry.method_semantics} onChange={(event) => updateEntry((entry) => {
                       entry.method_semantics = event.target.value;
@@ -996,69 +928,16 @@ function ApiOntologyPackageEditor({
                     </Select>
                   </div>
                   <div>
-                    <Label>Default action</Label>
-                    <Select value={currentEntry.default_action} onChange={(event) => updateEntry((entry) => {
-                      entry.default_action = event.target.value;
-                    })}>
-                      {["BLOCK", "OBSERVE", "SESSION", "UPSERT", "FORGET"].map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Repeat policy</Label>
-                    <Select value={currentEntry.repeat_policy} onChange={(event) => updateEntry((entry) => {
-                      entry.repeat_policy = event.target.value;
-                    })}>
-                      {["BYPASS", "REQUIRED"].map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Sensitivity hint</Label>
-                    <Select value={currentEntry.sensitivity_hint} onChange={(event) => updateEntry((entry) => {
-                      entry.sensitivity_hint = event.target.value;
-                    })}>
-                      {["S0_PUBLIC", "S1_INTERNAL", "S2_PERSONAL", "S3_CONFIDENTIAL", "S4_RESTRICTED"].map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Source precedence key</Label>
-                    <Input value={currentEntry.source_precedence_key} onChange={(event) => updateEntry((entry) => {
-                      entry.source_precedence_key = event.target.value;
+                    <Label>HTTP method</Label>
+                    <Input value={currentEntry.event_match.http_method} onChange={(event) => updateEntry((entry) => {
+                      entry.event_match.http_method = event.target.value;
                     })} />
                   </div>
-                  <div>
-                    <Label>LLM usage mode</Label>
-                    <Select value={currentEntry.llm_usage_mode} onChange={(event) => updateEntry((entry) => {
-                      entry.llm_usage_mode = event.target.value;
-                    })}>
-                      {["DISABLED", "ASSIST", "REQUIRE"].map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Prompt template key</Label>
-                    <Input
-                      value={currentEntry.prompt_template_key ?? ""}
-                      onChange={(event) =>
-                        updateEntry((entry) => {
-                          entry.prompt_template_key = event.target.value || null;
-                        })
-                      }
-                    />
+                  <div className="lg:col-span-2">
+                    <Label>Route template</Label>
+                    <Input value={currentEntry.event_match.route_template} onChange={(event) => updateEntry((entry) => {
+                      entry.event_match.route_template = event.target.value;
+                    })} />
                   </div>
                   <div className="lg:col-span-2">
                     <Label>Description</Label>
@@ -1074,130 +953,218 @@ function ApiOntologyPackageEditor({
                   </div>
                 </div>
 
-                <div className="panel-inset grid gap-4 p-4 lg:grid-cols-3">
-                  <div>
-                    <Label>Source system</Label>
-                    <Input value={currentEntry.event_match.source_system} onChange={(event) => updateEntry((entry) => {
-                      entry.event_match.source_system = event.target.value;
-                    })} />
-                  </div>
-                  <div>
-                    <Label>HTTP method</Label>
-                    <Input value={currentEntry.event_match.http_method} onChange={(event) => updateEntry((entry) => {
-                      entry.event_match.http_method = event.target.value;
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Route template</Label>
-                    <Input value={currentEntry.event_match.route_template} onChange={(event) => updateEntry((entry) => {
-                      entry.event_match.route_template = event.target.value;
-                    })} />
-                  </div>
-                </div>
-
-                <div className="panel-inset grid gap-4 p-4 lg:grid-cols-2">
-                  <div>
-                    <Label>Candidate memory types</Label>
-                    <Input value={joinCommaSeparated(currentEntry.candidate_memory_types)} onChange={(event) => updateEntry((entry) => {
-                      entry.candidate_memory_types = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Extractors</Label>
-                    <Input value={joinCommaSeparated(currentEntry.extractors)} onChange={(event) => updateEntry((entry) => {
-                      entry.extractors = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Relation templates</Label>
-                    <Input value={joinCommaSeparated(currentEntry.relation_templates)} onChange={(event) => updateEntry((entry) => {
-                      entry.relation_templates = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Allowed field paths</Label>
-                    <Input value={joinCommaSeparated(currentEntry.llm_allowed_field_paths)} onChange={(event) => updateEntry((entry) => {
-                      entry.llm_allowed_field_paths = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Blocked field paths</Label>
-                    <Input value={joinCommaSeparated(currentEntry.llm_blocked_field_paths)} onChange={(event) => updateEntry((entry) => {
-                      entry.llm_blocked_field_paths = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Request selectors</Label>
-                    <Input value={joinCommaSeparated(currentEntry.request_field_selectors)} onChange={(event) => updateEntry((entry) => {
-                      entry.request_field_selectors = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Response selectors</Label>
-                    <Input value={joinCommaSeparated(currentEntry.response_field_selectors)} onChange={(event) => updateEntry((entry) => {
-                      entry.response_field_selectors = parseCommaSeparated(event.target.value);
-                    })} />
-                  </div>
-                  <div>
-                    <Label>Primary fact source</Label>
-                    <Select value={currentEntry.normalization_rules.primary_fact_source} onChange={(event) => updateEntry((entry) => {
-                      entry.normalization_rules.primary_fact_source = event.target.value;
-                    })}>
-                      {["request_only", "response_only", "request_then_response", "response_then_request"].map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Evidence capture policy</Label>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <Select value={currentEntry.evidence_capture_policy.request} onChange={(event) => updateEntry((entry) => {
-                        entry.evidence_capture_policy.request = event.target.value;
+                <DisclosurePanel
+                  title="Advanced entry behavior"
+                  description="Memory extraction, LLM, sensitivity, evidence, and selector controls."
+                >
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <Label>Domain</Label>
+                      <Input value={currentEntry.domain} onChange={(event) => updateEntry((entry) => {
+                        entry.domain = event.target.value;
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Enabled</Label>
+                      <Select value={String(currentEntry.enabled)} onChange={(event) => updateEntry((entry) => {
+                        entry.enabled = event.target.value === "true";
                       })}>
-                        {["none", "summary_only", "summary_plus_artifact_ref"].map((option) => (
-                          <option key={option} value={option}>
-                            request: {option}
-                          </option>
-                        ))}
+                        <option value="true">true</option>
+                        <option value="false">false</option>
                       </Select>
-                      <Select value={currentEntry.evidence_capture_policy.response} onChange={(event) => updateEntry((entry) => {
-                        entry.evidence_capture_policy.response = event.target.value;
+                    </div>
+                    <div>
+                      <Label>Capability family</Label>
+                      <Select value={currentEntry.capability_family} onChange={(event) => updateEntry((entry) => {
+                        entry.capability_family = event.target.value;
                       })}>
-                        {["none", "summary_only", "summary_plus_artifact_ref"].map((option) => (
+                        {[
+                          "PROFILE_WRITE",
+                          "PREFERENCE_SET",
+                          "RELATION_WRITE",
+                          "ENTITY_UPSERT",
+                          "CONTENT_READ",
+                          "SEARCH_READ",
+                          "DELETE_FORGET",
+                          "UNKNOWN",
+                        ].map((option) => (
                           <option key={option} value={option}>
-                            response: {option}
+                            {option}
                           </option>
                         ))}
                       </Select>
                     </div>
+                    <div>
+                      <Label>Default action</Label>
+                      <Select value={currentEntry.default_action} onChange={(event) => updateEntry((entry) => {
+                        entry.default_action = event.target.value;
+                      })}>
+                        {["BLOCK", "OBSERVE", "SESSION", "UPSERT", "FORGET"].map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Repeat policy</Label>
+                      <Select value={currentEntry.repeat_policy} onChange={(event) => updateEntry((entry) => {
+                        entry.repeat_policy = event.target.value;
+                      })}>
+                        {["BYPASS", "REQUIRED"].map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Sensitivity hint</Label>
+                      <Select value={currentEntry.sensitivity_hint} onChange={(event) => updateEntry((entry) => {
+                        entry.sensitivity_hint = event.target.value;
+                      })}>
+                        {["S0_PUBLIC", "S1_INTERNAL", "S2_PERSONAL", "S3_CONFIDENTIAL", "S4_RESTRICTED"].map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Source precedence key</Label>
+                      <Input value={currentEntry.source_precedence_key} onChange={(event) => updateEntry((entry) => {
+                        entry.source_precedence_key = event.target.value;
+                      })} />
+                    </div>
+                    <div>
+                      <Label>LLM usage mode</Label>
+                      <Select value={currentEntry.llm_usage_mode} onChange={(event) => updateEntry((entry) => {
+                        entry.llm_usage_mode = event.target.value;
+                      })}>
+                        {["DISABLED", "ASSIST", "REQUIRE"].map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Prompt template key</Label>
+                      <Input
+                        value={currentEntry.prompt_template_key ?? ""}
+                        onChange={(event) =>
+                          updateEntry((entry) => {
+                            entry.prompt_template_key = event.target.value || null;
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label>Source system</Label>
+                      <Input value={currentEntry.event_match.source_system} onChange={(event) => updateEntry((entry) => {
+                        entry.event_match.source_system = event.target.value;
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Candidate memory types</Label>
+                      <Input value={joinCommaSeparated(currentEntry.candidate_memory_types)} onChange={(event) => updateEntry((entry) => {
+                        entry.candidate_memory_types = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Extractors</Label>
+                      <Input value={joinCommaSeparated(currentEntry.extractors)} onChange={(event) => updateEntry((entry) => {
+                        entry.extractors = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Relation templates</Label>
+                      <Input value={joinCommaSeparated(currentEntry.relation_templates)} onChange={(event) => updateEntry((entry) => {
+                        entry.relation_templates = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Allowed field paths</Label>
+                      <Input value={joinCommaSeparated(currentEntry.llm_allowed_field_paths)} onChange={(event) => updateEntry((entry) => {
+                        entry.llm_allowed_field_paths = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Blocked field paths</Label>
+                      <Input value={joinCommaSeparated(currentEntry.llm_blocked_field_paths)} onChange={(event) => updateEntry((entry) => {
+                        entry.llm_blocked_field_paths = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Request selectors</Label>
+                      <Input value={joinCommaSeparated(currentEntry.request_field_selectors)} onChange={(event) => updateEntry((entry) => {
+                        entry.request_field_selectors = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Response selectors</Label>
+                      <Input value={joinCommaSeparated(currentEntry.response_field_selectors)} onChange={(event) => updateEntry((entry) => {
+                        entry.response_field_selectors = parseCommaSeparated(event.target.value);
+                      })} />
+                    </div>
+                    <div>
+                      <Label>Primary fact source</Label>
+                      <Select value={currentEntry.normalization_rules.primary_fact_source} onChange={(event) => updateEntry((entry) => {
+                        entry.normalization_rules.primary_fact_source = event.target.value;
+                      })}>
+                        {["request_only", "response_only", "request_then_response", "response_then_request"].map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Evidence capture policy</Label>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Select value={currentEntry.evidence_capture_policy.request} onChange={(event) => updateEntry((entry) => {
+                          entry.evidence_capture_policy.request = event.target.value;
+                        })}>
+                          {["none", "summary_only", "summary_plus_artifact_ref"].map((option) => (
+                            <option key={option} value={option}>
+                              request: {option}
+                            </option>
+                          ))}
+                        </Select>
+                        <Select value={currentEntry.evidence_capture_policy.response} onChange={(event) => updateEntry((entry) => {
+                          entry.evidence_capture_policy.response = event.target.value;
+                        })}>
+                          {["none", "summary_only", "summary_plus_artifact_ref"].map((option) => (
+                            <option key={option} value={option}>
+                              response: {option}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="lg:col-span-2">
+                      <Label>Notes</Label>
+                      <Textarea
+                        className="min-h-24"
+                        value={currentEntry.notes ?? ""}
+                        onChange={(event) => updateEntry((entry) => {
+                          entry.notes = event.target.value;
+                        })}
+                      />
+                    </div>
                   </div>
-                  <div className="lg:col-span-2">
-                    <Label>Notes</Label>
-                    <Textarea
-                      className="min-h-24"
-                      value={currentEntry.notes ?? ""}
-                      onChange={(event) => updateEntry((entry) => {
-                        entry.notes = event.target.value;
-                      })}
-                    />
-                  </div>
-                </div>
+                </DisclosurePanel>
               </div>
             ) : (
               <p className="text-sm text-slate-400">Select an API entry to edit its matching and memory behavior.</p>
             )}
           </div>
 
-          <div className="panel space-y-5 p-5 sm:p-6">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="label">Workflow details</div>
-                <div className="mt-2 text-sm leading-6 text-slate-300">Describe cross-API relationships and the user goal they imply.</div>
-              </div>
-              {currentWorkflow ? <Badge tone="accent">{currentWorkflow.participant_entry_ids.length} participants</Badge> : null}
-            </div>
+          <DisclosurePanel
+            title="Workflow details"
+            description="Describe cross-API relationships and intent rules when workflow authoring is the current task."
+          >
+            {currentWorkflow ? <Badge tone="accent">{currentWorkflow.participant_entry_ids.length} participants</Badge> : null}
             {currentWorkflow ? (
               <div className="space-y-4">
                 <div className="panel-inset grid gap-4 p-4 lg:grid-cols-2">
@@ -1387,7 +1354,7 @@ function ApiOntologyPackageEditor({
             ) : (
               <p className="text-sm text-slate-400">Add a workflow to link APIs into a broader user goal.</p>
             )}
-          </div>
+          </DisclosurePanel>
         </div>
       </div>
     </div>
@@ -1435,11 +1402,16 @@ function ConfirmGate({
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70 px-4">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/76 px-4 backdrop-blur-sm">
       <div className="panel-strong w-full max-w-lg space-y-4 p-6">
         <div className="label">Confirmation required</div>
         <div className="text-xl font-semibold text-white">{title}</div>
-        <p className="text-sm text-slate-300">{body}</p>
+        <p className="text-sm leading-6 text-slate-300">{body}</p>
+        {danger ? (
+          <div className="rounded-xl border border-rose-300/24 bg-rose-400/10 p-3 text-sm leading-6 text-rose-100">
+            This action changes future operator state. Review the selected object before confirming.
+          </div>
+        ) : null}
         <div className="flex justify-end gap-3">
           <Button variant="secondary" onClick={onCancel}>
             Cancel
@@ -1465,10 +1437,36 @@ function StateCard({
   return (
     <Card className="space-y-3">
       <div className="label">Backend state</div>
-      <div className="text-lg font-semibold text-white">{title}</div>
-      <p className="text-sm text-slate-300">{body}</p>
+      <div className="text-lg font-semibold text-white text-balance">{title}</div>
+      <p className="text-sm leading-6 text-slate-300">{body}</p>
       {action ? <div>{action}</div> : null}
     </Card>
+  );
+}
+
+function DisclosurePanel({
+  title,
+  description,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details open={defaultOpen} className="surface-rail group rounded-2xl p-4 sm:p-5">
+      <summary className="focus-ring flex cursor-pointer list-none items-start justify-between gap-4 rounded-xl">
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold text-white">{title}</span>
+          {description ? <span className="mt-1 block text-sm leading-6 text-slate-400">{description}</span> : null}
+        </span>
+        <span className="mt-1 shrink-0 text-xs font-semibold text-cyan-200 group-open:hidden">Open</span>
+        <span className="mt-1 hidden shrink-0 text-xs font-semibold text-slate-400 group-open:inline">Close</span>
+      </summary>
+      <div className="mt-4 border-t border-[color:var(--color-line-subtle)] pt-4">{children}</div>
+    </details>
   );
 }
 
@@ -1880,12 +1878,7 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
 
   return (
     <div className="space-y-4">
-      <Section
-        eyebrow={meta.eyebrow}
-        title={meta.title}
-        action={<Badge tone={statusTone(active?.status ?? "draft")}>{active?.status ?? "draft"}</Badge>}
-      >
-        {error ? (
+      {error ? (
           <StateCard
             title="Unable to load config documents"
             body={error}
@@ -1894,17 +1887,27 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
         ) : loading ? (
           <StateCard title="Loading config documents" body="Fetching live documents, validations, and publications from the backend." />
         ) : (
-          <Card className="space-y-4">
-            <p className="max-w-3xl text-sm text-slate-300">{meta.description}</p>
-            <div className="grid gap-4 2xl:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <div className="grid gap-4 2xl:grid-cols-[240px_minmax(0,1fr)]">
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="label">Documents</div>
+                  <div className="label">Document</div>
                   {!docs.length ? (
                     <Button onClick={() => void createStarterDraft()} disabled={!canEdit}>Create starter draft</Button>
                   ) : null}
                 </div>
-                <div className="space-y-2">
+                {docs.length ? (
+                  <div className="2xl:hidden">
+                    <Select value={activeId} onChange={(event) => switchDocument(event.target.value)}>
+                      {docs.map((doc) => (
+                        <option key={doc.id} value={doc.id}>
+                          {doc.name} · {doc.status} · v{doc.version}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                ) : null}
+                <div className="hidden space-y-2 2xl:block">
                   {docs.map((doc) => (
                     <button
                       key={doc.id}
@@ -1931,6 +1934,11 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                     </p>
                   ) : null}
                 </div>
+                {!docs.length ? (
+                  <p className="rounded-2xl border border-dashed border-white/10 bg-white/5 px-4 py-6 text-sm text-slate-400 2xl:hidden">
+                    No {meta.title} documents exist yet. Create a starter draft to open the editor.
+                  </p>
+                ) : null}
               </div>
 
               <div className="space-y-4">
@@ -1940,7 +1948,7 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                       <ConsolePageHeader
                         eyebrow={meta.eyebrow}
                         title={editor.name}
-                        description="Use the structured package editor as the primary path. Keep lifecycle actions near the header, tune modules and entries in the main lane, and drop into raw source only when you need expert control."
+                        description="Start with modules and entries. Expert tools are collapsed below."
                         status={<Badge tone={statusTone(editor.status)}>{editor.status}</Badge>}
                         actions={
                           <>
@@ -1950,12 +1958,11 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                             <Button variant="secondary" onClick={validate} disabled={!canEdit}>
                               Validate
                             </Button>
-                            <Button variant="secondary" onClick={approve} disabled={!canApproveSelected || editor.status !== "validated"}>
-                              Approve
-                            </Button>
-                            <Button variant="secondary" onClick={exportDocument}>
-                              Export {sourceFormat.toUpperCase()}
-                            </Button>
+                            {editor.status === "validated" ? (
+                              <Button variant="secondary" onClick={approve} disabled={!canApproveSelected}>
+                                Approve
+                              </Button>
+                            ) : null}
                             <Button onClick={() => setConfirmPublish(true)} disabled={!currentBundle || !canPublishSelected || !bundleReadyToPublish}>
                               Publish bundle
                             </Button>
@@ -1964,37 +1971,54 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                         meta={
                           <>
                             <Badge>{joinItems([`v${editor.version}`, editor.scope, editor.tenant, editor.environment])}</Badge>
-                            <Badge>{apiPackageModuleCount} modules</Badge>
-                            <Badge>{apiPackageEntryCount} APIs</Badge>
-                            <Badge>{apiPackageWorkflowCount} workflows</Badge>
+                            <Badge>{apiPackageModuleCount} modules · {apiPackageEntryCount} APIs · {apiPackageWorkflowCount} workflows</Badge>
                             <Badge tone={hasUnsavedChanges ? "warning" : "success"}>
                               {hasUnsavedChanges ? "Unsaved draft changes" : "Draft synced to backend"}
                             </Badge>
                           </>
                         }
                       />
-                    ) : null}
+                    ) : (
+                      <ConsolePageHeader
+                        eyebrow={meta.eyebrow}
+                        title={editor.name}
+                        description={meta.description}
+                        status={<Badge tone={statusTone(editor.status)}>{editor.status}</Badge>}
+                        actions={
+                          <>
+                            <Button onClick={save} disabled={!canEdit}>
+                              Save draft
+                            </Button>
+                            <Button variant="secondary" onClick={validate} disabled={!canEdit}>
+                              Validate
+                            </Button>
+                            {editor.status === "validated" ? (
+                              <Button variant="secondary" onClick={approve} disabled={!canApproveSelected}>
+                                Approve
+                              </Button>
+                            ) : null}
+                            <Button onClick={() => setConfirmPublish(true)} disabled={!currentBundle || !canPublishSelected || !bundleReadyToPublish}>
+                              Publish bundle
+                            </Button>
+                          </>
+                        }
+                        meta={
+                          <>
+                            <Badge>{joinItems([`v${editor.version}`, editor.scope, editor.tenant, editor.environment])}</Badge>
+                            <Badge tone={hasUnsavedChanges ? "warning" : "success"}>
+                              {hasUnsavedChanges ? "Unsaved draft changes" : "Draft synced to backend"}
+                            </Badge>
+                          </>
+                        }
+                      />
+                    )}
 
-                    <div className={cx("grid gap-3", kind === "api-ontology" ? "sm:grid-cols-2 2xl:grid-cols-4" : "sm:grid-cols-2 lg:grid-cols-3")}>
-                      {kind === "api-ontology" ? (
-                        <>
-                          <Metric label="Version" value={`v${editor.version}`} hint="Active ontology revision" />
-                          <Metric label="Modules" value={String(apiPackageModuleCount)} hint="Grouped API families in the current draft" />
-                          <Metric label="API entries" value={String(apiPackageEntryCount)} hint="Concrete APIs modeled in structured authoring" />
-                          <Metric label="Workflows" value={String(apiPackageWorkflowCount)} hint="Cross-API user-task definitions" />
-                        </>
-                      ) : (
-                        <>
-                          <Metric label="Version" value={`v${editor.version}`} hint="Document revision" />
-                          <Metric label="Scope" value={editor.scope} hint="Applies to runtime" />
-                          <Metric label="Environment" value={editor.environment} hint="Operator environment" />
-                        </>
-                      )}
-                    </div>
-
-                    <div className="grid gap-4 min-[110rem]:grid-cols-[minmax(0,1fr)_360px]">
-                      <div className="min-w-0 space-y-4">
-                        <Card className="space-y-4">
+                    <div className="space-y-4">
+                      <DisclosurePanel
+                        title="Document settings"
+                        description="Rename the document or adjust scope metadata. Most authoring work happens below."
+                      >
+                        <div className="space-y-4">
                           <div className="grid gap-4 lg:grid-cols-2">
                             <div>
                               <Label>Name</Label>
@@ -2052,7 +2076,7 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                               </Button>
                             </div>
                           ) : (
-                            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[color:var(--color-line-subtle)] bg-[color:var(--color-card-inset)] px-4 py-3 text-sm text-slate-300">
+                            <div className="panel-inset flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm text-slate-300">
                               <span>Primary actions are pinned above so operators can stay in the structured editor.</span>
                               <Button variant="secondary" onClick={() => setConfirmArchive(true)} disabled={!canArchiveSelected}>
                                 Archive
@@ -2066,17 +2090,24 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                               Validation automatically saves the current draft first when the source or metadata changed.
                             </p>
                           ) : null}
-                        </Card>
+                        </div>
+                      </DisclosurePanel>
 
-                        {kind === "api-ontology" ? (
-                          <ApiOntologyPackageEditor
-                            activePackage={activeApiPackage}
-                            packageDraft={apiPackageDraft}
-                            onChangePackage={applyApiPackageDraft}
-                          />
-                        ) : null}
+                      {kind === "api-ontology" ? (
+                        <ApiOntologyPackageEditor
+                          activePackage={activeApiPackage}
+                          packageDraft={apiPackageDraft}
+                          onChangePackage={applyApiPackageDraft}
+                        />
+                      ) : null}
 
-                        <Section
+                      <DisclosurePanel
+                        title="Expert tools and diagnostics"
+                        description="Raw source, diff, import, bundle, validation, and publication history stay here when you need them."
+                      >
+                        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                          <div className="min-w-0 space-y-4">
+                            <Section
                           eyebrow={kind === "api-ontology" ? "Expert raw mode" : "Raw source"}
                           title={kind === "api-ontology" ? "Expert source editor" : "Document source"}
                           action={
@@ -2219,6 +2250,8 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                           </div>
                         </Card>
                       </div>
+                        </div>
+                      </DisclosurePanel>
                     </div>
                   </>
                 ) : (
@@ -2230,10 +2263,13 @@ export function ConfigWorkspace({ kind }: { kind: ConfigKind }) {
                 )}
               </div>
             </div>
-            {statusMessage ? <p className="text-sm text-cyan-200">{statusMessage}</p> : null}
-          </Card>
+            {statusMessage ? (
+              <div className="rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-3 text-sm leading-6 text-cyan-100">
+                {statusMessage}
+              </div>
+            ) : null}
+          </div>
         )}
-      </Section>
 
       <ConfirmGate
         title={`Publish ${editor?.name ?? "document family"}?`}
@@ -2593,6 +2629,7 @@ export function SimulationWorkspace() {
   const [sampleEvent, setSampleEvent] = useState("action: docs.openDocument\nuser: current\ncontext: live");
   const [current, setCurrent] = useState<SimulationRun | null>(null);
   const [error, setError] = useState("");
+  const [runError, setRunError] = useState("");
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
@@ -2616,14 +2653,84 @@ export function SimulationWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const selectedConfig = useMemo(
+    () => configs.find((doc) => doc.id === selectedId) ?? null,
+    [configs, selectedId],
+  );
+  const simulationBundle = useMemo(() => {
+    if (!selectedConfig) {
+      return null;
+    }
+    const familyDocs = configs.filter(
+      (doc) =>
+        doc.scope === selectedConfig.scope &&
+        doc.tenant === selectedConfig.tenant &&
+        doc.environment === selectedConfig.environment,
+    );
+    const latestByKind = new Map<ConfigKind, ConfigDocument>();
+    for (const doc of familyDocs) {
+      const currentDoc = latestByKind.get(doc.kind);
+      if (!currentDoc || doc.version > currentDoc.version) {
+        latestByKind.set(doc.kind, doc);
+      }
+    }
+    latestByKind.set(selectedConfig.kind, selectedConfig);
+    const apiOntology = latestByKind.get("api-ontology");
+    const memoryOntology = latestByKind.get("memory-ontology");
+    const policyProfile = latestByKind.get("policy-profile");
+    if (!apiOntology || !memoryOntology || !policyProfile) {
+      return null;
+    }
+    return { apiOntology, memoryOntology, policyProfile };
+  }, [configs, selectedConfig]);
+  const missingBundleKinds = useMemo(() => {
+    if (!selectedConfig) {
+      return ["api-ontology", "memory-ontology", "policy-profile"] as ConfigKind[];
+    }
+    const familyKinds = new Set(
+      configs
+        .filter(
+          (doc) =>
+            doc.scope === selectedConfig.scope &&
+            doc.tenant === selectedConfig.tenant &&
+            doc.environment === selectedConfig.environment,
+        )
+        .map((doc) => doc.kind),
+    );
+    familyKinds.add(selectedConfig.kind);
+    return (["api-ontology", "memory-ontology", "policy-profile"] as ConfigKind[]).filter((kind) => !familyKinds.has(kind));
+  }, [configs, selectedConfig]);
+  const canRunSimulation = Boolean(selectedId && sampleEvent.trim() && simulationBundle);
+
   const runSimulation = async () => {
     if (!selectedId) return;
-    const result = await client.configs.simulate(selectedId, sampleEvent);
-    setCurrent(result);
+    setRunError("");
+    if (!simulationBundle) {
+      setCurrent(null);
+      setRunError(
+        `Simulation requires a complete config family. Missing: ${missingBundleKinds.map((kind) => kindLabel(kind)).join(", ")}.`,
+      );
+      return;
+    }
+    try {
+      const result = await client.configs.simulate(selectedId, sampleEvent);
+      setCurrent(result);
+    } catch (requestError) {
+      setCurrent(null);
+      setRunError(formatError(requestError));
+    }
   };
 
   return (
-    <Section eyebrow="Simulation" title="Simulation runner" action={<Button onClick={runSimulation}>Run simulation</Button>}>
+    <Section
+      eyebrow="Simulation"
+      title="Simulation runner"
+      action={
+        <Button onClick={runSimulation} disabled={!canRunSimulation}>
+          Run simulation
+        </Button>
+      }
+    >
       {error ? (
         <StateCard title="Simulation data unavailable" body={error} action={<Button onClick={() => void refresh()}>Retry</Button>} />
       ) : loading ? (
@@ -2652,10 +2759,27 @@ export function SimulationWorkspace() {
                 </Select>
                 <Textarea value={sampleEvent} onChange={(event) => setSampleEvent(event.target.value)} className="min-h-56" />
               </div>
+              {!simulationBundle ? (
+                <div className="rounded-xl border border-amber-300/24 bg-amber-400/10 p-4 text-sm leading-6 text-amber-100">
+                  <div className="font-semibold">Complete the config family before running simulation.</div>
+                  <p className="mt-1 text-amber-100/80">
+                    Missing {missingBundleKinds.map((kind) => kindLabel(kind)).join(", ")} for the selected scope, tenant, and environment.
+                  </p>
+                </div>
+              ) : (
+                <div className="panel-inset p-4 text-sm leading-6 text-slate-300">
+                  <div className="label">Candidate bundle</div>
+                  <div className="mt-2 text-white">
+                    {simulationBundle.apiOntology.name} · {simulationBundle.memoryOntology.name} · {simulationBundle.policyProfile.name}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">
-              {current ? (
+              {runError ? (
+                <EmptyState eyebrow="Simulation blocked" title="The simulation did not run" body={runError} />
+              ) : current ? (
                 <>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     <Metric label="Before" value={current.beforeDecision} hint="Baseline runtime behavior" />
